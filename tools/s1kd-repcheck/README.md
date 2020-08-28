@@ -29,6 +29,9 @@ In addition to CIR data modules specified with -R or explicitly linked
 in CIR references, allow CIR references to be resolved against any CIR
 data modules that were specified as objects to check.
 
+-D, --dump-xsl  
+Dump the built-in XSLT used to extract CIR references.
+
 -d, --dir &lt;dir&gt;  
 The directory to start searching for CIR data modules in. By default,
 the current directory is used.
@@ -75,8 +78,39 @@ Search for CIR data modules recursively.
 Print a summary of the check after it completes, including statistics on
 the number of objects that passed/failed the check.
 
+-t, --type &lt;type&gt;  
+Validate or list only CIR references of the specified type. The built-in
+types are:
+
+-   acp (Access point)
+
+-   app (Applicability annotation)
+
+-   caut (Caution)
+
+-   cbr (Circuit breaker)
+
+-   cin (Control/Indicator)
+
+-   ent (Enterprise)
+
+-   fin (Functional item)
+
+-   part
+
+-   supply
+
+-   tool
+
+-   warn (Warning)
+
+-   zone
+
 -v, --verbose  
 Verbose output. Specify multiple times to increase the verbosity.
+
+-X, --xsl &lt;file&gt;  
+Use custom XSLT to extract CIR references.
 
 -x, --xml  
 Print an XML report of the check.
@@ -92,8 +126,8 @@ Show version information.
 &lt;object&gt;...  
 Object(s) to check CIR references in.
 
-In addition, the following options enable features of the XML parser
-that are disabled as a precaution by default:
+In addition, the following options allow configuration of the XML
+parser:
 
 --dtdload  
 Load the external DTD.
@@ -115,6 +149,83 @@ Emit warnings from parser.
 
 --xinclude  
 Do XInclude processing.
+
+--xml-catalog &lt;file&gt;  
+Use an XML catalog when resolving entities. Multiple catalogs may be
+loaded by specifying this option multiple times.
+
+Custom XSLT (-X)
+----------------
+
+What elements are extracted as CIR references for validating, and how
+they are validated, can be configured through a custom XSLT script
+specified with the -X (--xsl) option.
+
+The custom XSLT script should add the following attributes to elements
+which will be validated as CIR references:
+
+`type`  
+A name for the type of CIR reference.
+
+`name`  
+A descriptive name for the CIR reference that can be used in reports.
+
+`test`  
+An XPath expression used to match the corresponding CIR identification
+element.
+
+The namespace for these attributes must be:
+`urn:s1kd-tools:s1kd-repcheck`
+
+Example XSLT template to extract functional item references:
+
+    <xsl:template match="functionalItemRef">
+    <xsl:variable name="fin" select="@functionalItemNumber"/>
+    <xsl:copy>
+    <xsl:apply-templates select="@*"/>
+    <xsl:attribute name="s1kd-repcheck:type">fin</xsl:attribute>
+    <xsl:attribute name="s1kd-repcheck:name">
+    <xsl:text>Functional item </xsl:text>
+    <xsl:value-of select="$fin"/>
+    </xsl:attribute>
+    <xsl:attribute name="s1kd-repcheck:test">
+    <xsl:text>//functionalItemIdent[@functionalItemNumber='</xsl:text>
+    <xsl:value-of select="$fin"/>
+    <xsl:text>']</xsl:text>
+    </xsl:attribute>
+    <xsl:apply-templates select="node()"/>
+    </xsl:copy>
+    </xsl:template>
+
+A custom script also allows validating non-standard types of "CIR"
+references. For example, if a project wants to validate acronyms used in
+data modules against a central repository of acronyms, this could be
+done like so:
+
+    <xsl:template match="acronym">
+    <xsl:variable name="term" select="acronymTerm"/>
+    <xsl:copy>
+    <xsl:apply-templates select="@*"/>
+    <xsl:attribute name="s1kd-repcheck:type">acr</xsl:attribute>
+    <xsl:attribute name="s1kd-repcheck:name">
+    <xsl:text>Acronym </xsl:text>
+    <xsl:value-of select="$term"/>
+    </xsl:attribute>
+    <xsl:attribute name="s1kd-repcheck:test">
+    <xsl:text>//acronym[acronymTerm = '</xsl:text>
+    <xsl:value-of select="$term"/>
+    <xsl:text>']</xsl:text>
+    </xsl:attribute>
+    <xsl:apply-templates select="node()"/>
+    </xsl:copy>
+    </xsl:template>
+
+As there is no standard "acronym" CIR type, the object containing the
+repository would need to be specified explicitly with -R.
+
+The built-in XSLT for extracting CIR references can be dumped as a
+starting point for a custom script by specifying the -D (--dump-xsl)
+option.
 
 EXIT STATUS
 ===========

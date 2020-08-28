@@ -17,7 +17,7 @@
 #include "xsl.h"
 
 #define PROG_NAME "s1kd-instance"
-#define VERSION "9.4.4"
+#define VERSION "12.2.0"
 
 /* Prefixes before messages printed to console */
 #define ERR_PREFIX PROG_NAME ": ERROR: "
@@ -133,17 +133,14 @@ struct ident {
 	char *imfIdentIcn;
 };
 
-/* User-defined applicability */
-static xmlNodePtr applicability;
-
-/* Number of user-defined applicability definitions. */
-static int napplics = 0;
-
 /* Assume objects were created with -N. */
 static bool no_issue = false;
 
 /* Verbosity level */
 static enum verbosity { QUIET, NORMAL, VERBOSE, DEBUG } verbosity = NORMAL;
+
+/* Method for listing properties. */
+enum listprops { STANDALONE, APPLIC, ALL };
 
 /* Determine whether an applicability definition may be modified.
  * User-definitions may only be modified by other user-definitions.
@@ -155,7 +152,7 @@ static bool allow_def_modify(bool userdefined, const xmlChar *attr)
 }
 
 /* Define a value for a product attribute or condition. */
-static void define_applic(const xmlChar *ident, const xmlChar *type, const xmlChar *value, bool perdm, bool userdefined)
+static void define_applic(xmlNodePtr defs, int *napplics, const xmlChar *ident, const xmlChar *type, const xmlChar *value, bool perdm, bool userdefined)
 {
 	xmlNodePtr assert = NULL;
 	xmlNodePtr cur;
@@ -165,7 +162,7 @@ static void define_applic(const xmlChar *ident, const xmlChar *type, const xmlCh
 	}
 
 	/* Check if an assert has already been created for this property. */
-	for (cur = applicability->children; cur; cur = cur->next) {
+	for (cur = defs->children; cur; cur = cur->next) {
 		xmlChar *cur_ident = xmlGetProp(cur, BAD_CAST "applicPropertyIdent");
 		xmlChar *cur_type  = xmlGetProp(cur, BAD_CAST "applicPropertyType");
 
@@ -179,14 +176,14 @@ static void define_applic(const xmlChar *ident, const xmlChar *type, const xmlCh
 
 	/* If no assert exists, add a new one. */
 	if (!assert) {
-		assert = xmlNewChild(applicability, NULL, BAD_CAST "assert", NULL);
+		assert = xmlNewChild(defs, NULL, BAD_CAST "assert", NULL);
 		xmlSetProp(assert, BAD_CAST "applicPropertyIdent", ident);
 		xmlSetProp(assert, BAD_CAST "applicPropertyType",  type);
 		xmlSetProp(assert, BAD_CAST "applicPropertyValues", value);
 		xmlSetProp(assert, BAD_CAST "userDefined", BAD_CAST (userdefined ? "true" : "false"));
 
 		if (userdefined) {
-			++napplics;
+			++(*napplics);
 		}
 	/* Or, if an assert already exists... */
 	} else {
@@ -836,14 +833,20 @@ static void clean_applic(xmlNodePtr referencedApplicGroup, xmlNodePtr node)
 }
 
 /* Remove unused applicability annotations. */
-static void rem_unused_annotations(xmlDocPtr doc)
+static xmlNodePtr rem_unused_annotations(xmlDocPtr doc, xmlNodePtr referencedApplicGroup)
 {
 	xmlXPathContextPtr ctx;
 	xmlXPathObjectPtr obj;
 
 	ctx = xmlXPathNewContext(doc);
+	xmlXPathSetContextNode(referencedApplicGroup, ctx);
 
-	obj = xmlXPathEvalExpression(BAD_CAST "//referencedApplicGroup/applic[not(@id=//@applicRefId)]", ctx);
+	if (xmlStrcmp(referencedApplicGroup->name, BAD_CAST "referencedApplicGroup") == 0) {
+		obj = xmlXPathEval(BAD_CAST "applic[not(@id=//@applicRefId)]", ctx);
+	} else {
+		obj = xmlXPathEval(BAD_CAST "applic[not(@id=//@refapplic)]", ctx);
+	}
+
 	if (!xmlXPathNodeSetIsEmpty(obj->nodesetval)) {
 		int i;
 		for (i = 0; i < obj->nodesetval->nodeNr; ++i) {
@@ -852,20 +855,17 @@ static void rem_unused_annotations(xmlDocPtr doc)
 			obj->nodesetval->nodeTab[i] = NULL;
 		}
 	}
-	xmlXPathFreeObject(obj);
 
-	obj = xmlXPathEvalExpression(BAD_CAST "//inlineapplics/applic[not(@id=//@refapplic)]", ctx);
-	if (!xmlXPathNodeSetIsEmpty(obj->nodesetval)) {
-		int i;
-		for (i = 0; i < obj->nodesetval->nodeNr; ++i) {
-			xmlUnlinkNode(obj->nodesetval->nodeTab[i]);
-			xmlFreeNode(obj->nodesetval->nodeTab[i]);
-			obj->nodesetval->nodeTab[i] = NULL;
-		}
-	}
 	xmlXPathFreeObject(obj);
-
 	xmlXPathFreeContext(ctx);
+
+	if (xmlChildElementCount(referencedApplicGroup) == 0) {
+		xmlUnlinkNode(referencedApplicGroup);
+		xmlFreeNode(referencedApplicGroup);
+		return NULL;
+	}
+
+	return referencedApplicGroup;
 }
 
 /* Remove display text from the containing annotation. */
@@ -978,13 +978,13 @@ static void simpl_applic_evals(xmlNodePtr node)
 }
 
 /* Remove <referencedApplicGroup> if all applic statements are removed */
-static void simpl_applic_clean(xmlNodePtr defs, xmlNodePtr referencedApplicGroup, bool remtrue)
+static xmlNodePtr simpl_applic_clean(xmlNodePtr defs, xmlNodePtr referencedApplicGroup, bool remtrue)
 {
 	bool has_applic = false;
 	xmlNodePtr cur;
 
 	if (!referencedApplicGroup) {
-		return;
+		return NULL;
 	}
 
 	simpl_applic(defs, referencedApplicGroup, remtrue);
@@ -999,7 +999,10 @@ static void simpl_applic_clean(xmlNodePtr defs, xmlNodePtr referencedApplicGroup
 	if (!has_applic) {
 		xmlUnlinkNode(referencedApplicGroup);
 		xmlFreeNode(referencedApplicGroup);
+		return NULL;
 	}
+
+	return referencedApplicGroup;
 }
 
 /* Copy applic defs without non-user-definitions. */
@@ -1465,7 +1468,7 @@ static xmlNodePtr create_or(xmlChar *ident, xmlChar *type, xmlNodePtr values, en
 }
 
 /* Set the applicability for the whole data module instance */
-static void set_applic(xmlDocPtr doc, char *new_text, bool combine)
+static void set_applic(xmlDocPtr doc, xmlNodePtr defs, int napplics, char *new_text, bool combine)
 {
 	xmlNodePtr new_applic, new_displayText, new_simplePara, new_evaluate, cur, applic;
 	enum issue iss;
@@ -1509,7 +1512,7 @@ static void set_applic(xmlDocPtr doc, char *new_text, bool combine)
 		new_evaluate = new_applic;
 	}
 
-	for (cur = applicability->children; cur; cur = cur->next) {
+	for (cur = defs->children; cur; cur = cur->next) {
 		xmlChar *user_def;
 
 		user_def = xmlGetProp(cur, BAD_CAST "userDefined");
@@ -1579,11 +1582,20 @@ static bool auto_name(char *out, char *src, xmlDocPtr dm, const char *dir, bool 
 {
 	struct ident ident = {0};
 	char iss[8] = "";
+	const char *dname, *sep;
+
+	if (strcmp(dir, ".") == 0) {
+		dname = "";
+		sep = "";
+	} else {
+		dname = dir;
+		sep = "/";
+	}
 
 	if (!init_ident(&ident, dm)) {
 		char *base;
 		base = basename(src);
-		snprintf(out, PATH_MAX, "%s/%s", dir, base);
+		snprintf(out, PATH_MAX, "%s%s%s", dname, sep, base);
 		return true;
 	}
 
@@ -1604,8 +1616,9 @@ static bool auto_name(char *out, char *src, xmlDocPtr dm, const char *dir, bool 
 
 	if (ident.type == PM) {
 		if (ident.extended) {
-			sprintf(out, "%s/PME-%s-%s-%s-%s-%s-%s%s_%s-%s.XML",
-				dir,
+			sprintf(out, "%s%sPME-%s-%s-%s-%s-%s-%s%s_%s-%s.XML",
+				dname,
+				sep,
 				ident.extensionProducer,
 				ident.extensionCode,
 				ident.modelIdentCode,
@@ -1616,8 +1629,9 @@ static bool auto_name(char *out, char *src, xmlDocPtr dm, const char *dir, bool 
 				ident.languageIsoCode,
 				ident.countryIsoCode);
 		} else {
-			sprintf(out, "%s/PMC-%s-%s-%s-%s%s_%s-%s.XML",
-				dir,
+			sprintf(out, "%s%sPMC-%s-%s-%s-%s%s_%s-%s.XML",
+				dname,
+				sep,
 				ident.modelIdentCode,
 				ident.senderIdent,
 				ident.pmNumber,
@@ -1627,8 +1641,9 @@ static bool auto_name(char *out, char *src, xmlDocPtr dm, const char *dir, bool 
 				ident.countryIsoCode);
 		}
 	} else if (ident.type == DML) {
-		sprintf(out, "%s/DML-%s-%s-%s-%s-%s%s.XML",
-			dir,
+		sprintf(out, "%s%sDML-%s-%s-%s-%s-%s%s.XML",
+			dname,
+			sep,
 			ident.modelIdentCode,
 			ident.senderIdent,
 			ident.dmlCommentType,
@@ -1643,8 +1658,9 @@ static bool auto_name(char *out, char *src, xmlDocPtr dm, const char *dir, bool 
 		}
 
 		if (ident.extended) {
-			sprintf(out, "%s/%s-%s-%s-%s-%s-%s-%s%s-%s-%s%s-%s%s-%s%s%s_%s-%s.XML",
-				dir,
+			sprintf(out, "%s%s%s-%s-%s-%s-%s-%s-%s%s-%s-%s%s-%s%s-%s%s%s_%s-%s.XML",
+				dname,
+				sep,
 				ident.type == DM ? "DME" : "UPE",
 				ident.extensionProducer,
 				ident.extensionCode,
@@ -1664,8 +1680,9 @@ static bool auto_name(char *out, char *src, xmlDocPtr dm, const char *dir, bool 
 				ident.languageIsoCode,
 				ident.countryIsoCode);
 		} else {
-			sprintf(out, "%s/%s-%s-%s-%s-%s%s-%s-%s%s-%s%s-%s%s%s_%s-%s.XML",
-				dir,
+			sprintf(out, "%s%s%s-%s-%s-%s-%s%s-%s-%s%s-%s%s-%s%s%s_%s-%s.XML",
+				dname,
+				sep,
 				ident.type == DM ? "DMC" : "UPF",
 				ident.modelIdentCode,
 				ident.systemDiffCode,
@@ -1684,8 +1701,9 @@ static bool auto_name(char *out, char *src, xmlDocPtr dm, const char *dir, bool 
 				ident.countryIsoCode);
 		}
 	} else if (ident.type == COM) {
-		sprintf(out, "%s/COM-%s-%s-%s-%s-%s_%s-%s.XML",
-			dir,
+		sprintf(out, "%s%sCOM-%s-%s-%s-%s-%s_%s-%s.XML",
+			dname,
+			sep,
 			ident.modelIdentCode,
 			ident.senderIdent,
 			ident.yearOfDataIssue,
@@ -1694,16 +1712,18 @@ static bool auto_name(char *out, char *src, xmlDocPtr dm, const char *dir, bool 
 			ident.languageIsoCode,
 			ident.countryIsoCode);
 	} else if (ident.type == DDN) {
-		sprintf(out, "%s/DDN-%s-%s-%s-%s-%s.XML",
-			dir,
+		sprintf(out, "%s%sDDN-%s-%s-%s-%s-%s.XML",
+			dname,
+			sep,
 			ident.modelIdentCode,
 			ident.senderIdent,
 			ident.receiverIdent,
 			ident.yearOfDataIssue,
 			ident.seqNumber);
 	} else if (ident.type == IMF) {
-		sprintf(out, "%s/IMF-%s%s.XML",
-			dir,
+		sprintf(out, "%s%sIMF-%s%s.XML",
+			dname,
+			sep,
 			ident.imfIdentIcn,
 			iss);
 	} else {
@@ -1713,28 +1733,6 @@ static bool auto_name(char *out, char *src, xmlDocPtr dm, const char *dir, bool 
 	free_ident(&ident);
 
 	return true;
-}
-
-/* Add an "identity" template to an XSL stylesheet */
-static void add_identity(xmlDocPtr style)
-{
-	xmlDocPtr identity;
-	xmlNodePtr stylesheet, first, template;
-
-	identity = read_xml_mem((const char *) ___common_identity_xsl, ___common_identity_xsl_len);
-	template = xmlFirstElementChild(xmlDocGetRootElement(identity));
-
-	stylesheet = xmlDocGetRootElement(style);
-
-	first = xmlFirstElementChild(stylesheet);
-
-	if (first) {
-		xmlAddPrevSibling(first, xmlCopyNode(template, 1));
-	} else {
-		xmlAddChild(stylesheet, xmlCopyNode(template, 1));
-	}
-
-	xmlFreeDoc(identity);
 }
 
 /* Get the appropriate built-in CIR repository XSLT by name */
@@ -1819,7 +1817,7 @@ static void undepend_cir_xsl(xmlDocPtr dm, xmlDocPtr cir, xsltStylesheetPtr styl
 
 	res = xsltApplyStylesheet(style, muxdoc, NULL);
 
-	old = xmlDocSetRootElement(dm, xmlCopyNode(first_xpath_node(res, NULL, BAD_CAST "/mux/dmodule[1]"), 1));
+	old = xmlDocSetRootElement(dm, xmlCopyNode(first_xpath_node(res, NULL, BAD_CAST "/mux/*[1]"), 1));
 	xmlFreeNode(old);
 
 	xmlFreeDoc(res);
@@ -1854,33 +1852,36 @@ static xmlNodePtr undepend_cir(xmlDocPtr dm, xmlNodePtr defs, const char *cirdoc
 	ctxt = xmlXPathNewContext(cir);
 
 	results = xmlXPathEvalExpression(BAD_CAST "//content", ctxt);
-	content = results->nodesetval->nodeTab[0];
-	xmlXPathFreeObject(results);
-
-	results = xmlXPathEvalExpression(BAD_CAST "//referencedApplicGroup", ctxt);
-
-	if (!xmlXPathNodeSetIsEmpty(results->nodesetval)) {
-		referencedApplicGroup = results->nodesetval->nodeTab[0];
-		strip_applic(defs, referencedApplicGroup, content);
-	}
-
-	xmlXPathFreeObject(results);
-
-	results = xmlXPathEvalExpression(BAD_CAST
-		"//content/commonRepository/*[position()=last()]|"
-		"//content/techRepository/*[position()=last()]|"
-		"//content/techrep/*[position()=last()]|"
-		"//content/illustratedPartsCatalog",
-		ctxt);
 
 	if (xmlXPathNodeSetIsEmpty(results->nodesetval)) {
-		if (verbosity > QUIET) {
-			fprintf(stderr, S_INVALID_CIR, cirdocfname);
+		cirnode = xmlDocGetRootElement(cir);
+	} else {
+		content = results->nodesetval->nodeTab[0];
+		xmlXPathFreeObject(results);
+
+		results = xmlXPathEvalExpression(BAD_CAST "//referencedApplicGroup", ctxt);
+
+		if (!xmlXPathNodeSetIsEmpty(results->nodesetval)) {
+			referencedApplicGroup = results->nodesetval->nodeTab[0];
+			strip_applic(defs, referencedApplicGroup, content);
 		}
-		exit(EXIT_BAD_XML);
+
+		xmlXPathFreeObject(results);
+
+		results = xmlXPathEvalExpression(BAD_CAST
+			"//content/commonRepository/*[position()=last()]|"
+			"//content/techRepository/*[position()=last()]|"
+			"//content/techrep/*[position()=last()]|"
+			"//content/illustratedPartsCatalog",
+			ctxt);
+
+		if (xmlXPathNodeSetIsEmpty(results->nodesetval)) {
+			cirnode = xmlDocGetRootElement(cir);
+		} else {
+			cirnode = results->nodesetval->nodeTab[0];
+		}
 	}
 
-	cirnode = results->nodesetval->nodeTab[0];
 	xmlXPathFreeObject(results);
 
 	cirtype = (char *) cirnode->name;
@@ -1902,7 +1903,6 @@ static xmlNodePtr undepend_cir(xmlDocPtr dm, xmlNodePtr defs, const char *cirdoc
 
 	if (styledoc) {
 		xsltStylesheetPtr style;
-		add_identity(styledoc);
 		style = xsltParseStylesheetDoc(styledoc);
 		undepend_cir_xsl(dm, cir, style);
 		xsltFreeStylesheet(style);
@@ -1915,25 +1915,21 @@ static xmlNodePtr undepend_cir(xmlDocPtr dm, xmlNodePtr defs, const char *cirdoc
 	}
 
 	if (add_src) {
-		xmlNodePtr security, dmIdent, repositorySourceDmIdent, cur;
+		xmlNodePtr dmIdent;
 
-		ctxt = xmlXPathNewContext(dm);
-		results = xmlXPathEvalExpression(BAD_CAST "//security", ctxt);
-		security = results->nodesetval->nodeTab[0];
-		xmlXPathFreeObject(results);
-		xmlXPathFreeContext(ctxt);
+		dmIdent = xpath_first_node(cir, NULL, BAD_CAST "//dmIdent");
 
-		repositorySourceDmIdent = xmlNewNode(NULL, BAD_CAST "repositorySourceDmIdent");
-		repositorySourceDmIdent = xmlAddPrevSibling(security, repositorySourceDmIdent);
+		if (dmIdent) {
+			xmlNodePtr security, repositorySourceDmIdent, cur;
 
-		ctxt = xmlXPathNewContext(cir);
-		results = xmlXPathEvalExpression(BAD_CAST "//dmIdent", ctxt);
-		dmIdent = results->nodesetval->nodeTab[0];
-		xmlXPathFreeObject(results);
-		xmlXPathFreeContext(ctxt);
+			security = xpath_first_node(dm, NULL, BAD_CAST "//security");
 
-		for (cur = dmIdent->children; cur; cur = cur->next) {
-			xmlAddChild(repositorySourceDmIdent, xmlCopyNode(cur, 1));
+			repositorySourceDmIdent = xmlNewNode(NULL, BAD_CAST "repositorySourceDmIdent");
+			repositorySourceDmIdent = xmlAddPrevSibling(security, repositorySourceDmIdent);
+
+			for (cur = dmIdent->children; cur; cur = cur->next) {
+				xmlAddChild(repositorySourceDmIdent, xmlCopyNode(cur, 1));
+			}
 		}
 	}
 
@@ -2204,7 +2200,7 @@ static bool check_wholedm_applic(xmlDocPtr dm, xmlNodePtr defs)
 /* Read applicability definitions from the <assign> elements of a
  * product instance in the specified PCT data module.\
  */
-static void load_applic_from_pct(xmlDocPtr pct, const char *pctfname, const char *product)
+static void load_applic_from_pct(xmlNodePtr defs, int *napplics, xmlDocPtr pct, const char *pctfname, const char *product)
 {
 	xmlXPathContextPtr ctx;
 	xmlXPathObjectPtr obj;
@@ -2256,7 +2252,7 @@ static void load_applic_from_pct(xmlDocPtr pct, const char *pctfname, const char
 			value = xmlGetProp(obj->nodesetval->nodeTab[i],
 				BAD_CAST "applicPropertyValue");
 
-			define_applic(ident, type, value, true, true);
+			define_applic(defs, napplics, ident, type, value, true, true);
 
 			xmlFree(ident);
 			xmlFree(type);
@@ -2287,7 +2283,6 @@ static void transform_doc(xmlDocPtr doc, unsigned char *xml, unsigned int len, c
 	xmlNodePtr old;
 
 	styledoc = read_xml_mem((const char *) xml, len);
-	add_identity(styledoc);
 	style = xsltParseStylesheetDoc(styledoc);
 
 	src = xmlCopyDoc(doc, 1);
@@ -2346,7 +2341,7 @@ static void insert_comment(xmlDocPtr doc, const char *text, const char *path)
 }
 
 /* Read an applicability assign in the form of ident:type=value */
-static void read_applic(char *s)
+static void read_applic(xmlNodePtr defs, int *napplics, char *s)
 {
 	char *ident, *type, *value;
 
@@ -2361,7 +2356,7 @@ static void read_applic(char *s)
 	type  = strtok(NULL, "=");
 	value = strtok(NULL, "");
 
-	define_applic(BAD_CAST ident, BAD_CAST type, BAD_CAST value, false, true);
+	define_applic(defs, napplics, BAD_CAST ident, BAD_CAST type, BAD_CAST value, false, true);
 }
 
 /* Set the remarks for the object */
@@ -2738,17 +2733,17 @@ static bool find_pct_fname(char *dst, xmlDocPtr act)
 }
 
 /* Unset all applicability assigned on a per-DM basis. */
-static void clear_perdm_applic(void)
+static void clear_perdm_applic(xmlNodePtr defs, int *napplics)
 {
 	xmlNodePtr cur;
-	cur = applicability->children;
+	cur = defs->children;
 	while (cur) {
 		xmlNodePtr next;
 		next = cur->next;
 		if (xmlHasProp(cur, BAD_CAST "perDm")) {
 			xmlUnlinkNode(cur);
 			xmlFreeNode(cur);
-			--napplics;
+			--(*napplics);
 		}
 		cur = next;
 	}
@@ -2815,7 +2810,7 @@ static int find_source(char *src, xmlDocPtr *doc)
 	return !found;
 }
 
-static void load_applic_from_inst(xmlDocPtr doc)
+static void load_applic_from_inst(xmlNodePtr defs, xmlDocPtr doc)
 {
 	xmlXPathContextPtr ctx;
 	xmlXPathObjectPtr obj;
@@ -2834,7 +2829,7 @@ static void load_applic_from_inst(xmlDocPtr doc)
 			value = first_xpath_value(doc, obj->nodesetval->nodeTab[i], BAD_CAST "@applicPropertyValues");
 
 			/* userdefined = false so that user-defined assertions override those in the instance. */
-			define_applic(ident, type, value, true, false);
+			define_applic(defs, NULL, ident, type, value, true, false);
 
 			xmlFree(ident);
 			xmlFree(type);
@@ -3291,11 +3286,12 @@ static void resolve_containers(xmlDocPtr doc, xmlNodePtr defs)
 	xmlXPathFreeContext(ctx);
 }
 
-static void add_ct_prop_vals(xmlDocPtr act, xmlDocPtr cct, const xmlChar *id, const xmlChar *type, xmlNodePtr p)
+static void add_ct_prop_vals(xmlDocPtr act, xmlDocPtr cct, const xmlChar *id, const xmlChar *type, xmlNodePtr p, xmlNodePtr defs)
 {
 	xmlXPathContextPtr ctx;
 	xmlXPathObjectPtr obj;
-	xmlNodePtr property = NULL;
+	xmlNodePtr prop_desc = NULL;
+	xmlNodePtr prop_vals = NULL;
 
 	if (act && xmlStrcmp(type, BAD_CAST "prodattr") == 0) {
 		ctx = xmlXPathNewContext(act);
@@ -3303,7 +3299,8 @@ static void add_ct_prop_vals(xmlDocPtr act, xmlDocPtr cct, const xmlChar *id, co
 		obj = xmlXPathEvalExpression(BAD_CAST "//productAttribute[@id=$id]|//prodattr[@id=$id]", ctx);
 
 		if (!xmlXPathNodeSetIsEmpty(obj->nodesetval)) {
-			property = obj->nodesetval->nodeTab[0];
+			prop_desc = obj->nodesetval->nodeTab[0];
+			prop_vals = prop_desc;
 		}
 	} else if (cct && xmlStrcmp(type, BAD_CAST "condition") == 0) {
 		xmlChar *condtype;
@@ -3317,6 +3314,8 @@ static void add_ct_prop_vals(xmlDocPtr act, xmlDocPtr cct, const xmlChar *id, co
 			return;
 		}
 
+		prop_desc = obj->nodesetval->nodeTab[0]->parent;
+
 		condtype = xmlNodeGetContent(obj->nodesetval->nodeTab[0]);
 		xmlXPathFreeObject(obj);
 		xmlXPathRegisterVariable(ctx, BAD_CAST "id", xmlXPathNewString(condtype));
@@ -3325,7 +3324,7 @@ static void add_ct_prop_vals(xmlDocPtr act, xmlDocPtr cct, const xmlChar *id, co
 		obj = xmlXPathEvalExpression(BAD_CAST "//condType[@id=$id]|//conditiontype[@id=$id]", ctx);
 
 		if (!xmlXPathNodeSetIsEmpty(obj->nodesetval)) {
-			property = obj->nodesetval->nodeTab[0];
+			prop_vals = obj->nodesetval->nodeTab[0];
 		}
 	} else {
 		fprintf(stderr, S_NO_CT, (char *) id, (char *) type, xmlStrcmp(type, BAD_CAST "prodattr") == 0 ? "ACT" : "CCT");
@@ -3334,32 +3333,31 @@ static void add_ct_prop_vals(xmlDocPtr act, xmlDocPtr cct, const xmlChar *id, co
 
 	xmlXPathFreeObject(obj);
 
-	if (property) {
+	if (prop_desc && prop_vals) {
 		xmlChar *s;
 
 		/* Copy information about the property from ACT/CCT. */
-		if ((s = first_xpath_value(NULL, property, BAD_CAST "@valuePattern|@pattern"))) {
+		if ((s = first_xpath_value(NULL, prop_vals, BAD_CAST "@valuePattern|@pattern"))) {
 			xmlSetProp(p, BAD_CAST "pattern", s);
 			xmlFree(s);
 		}
 
-		if ((s = first_xpath_value(NULL, property, BAD_CAST "name"))) {
+		if ((s = first_xpath_value(NULL, prop_desc, BAD_CAST "name"))) {
 			xmlNewTextChild(p, p->ns, BAD_CAST "name", s);
 			xmlFree(s);
 		}
 
-		if ((s = first_xpath_value(NULL, property, BAD_CAST "descr|description"))) {
+		if ((s = first_xpath_value(NULL, prop_desc, BAD_CAST "descr|description"))) {
 			xmlNewTextChild(p, p->ns, BAD_CAST "descr", s);
 			xmlFree(s);
 		}
 
-		if ((s = first_xpath_value(NULL, property, BAD_CAST "displayName|displayname"))) {
+		if ((s = first_xpath_value(NULL, prop_desc, BAD_CAST "displayName|displayname"))) {
 			xmlNewTextChild(p, p->ns, BAD_CAST "displayName", s);
 			xmlFree(s);
 		}
 
-		xmlXPathSetContextNode(property, ctx);
-
+		xmlXPathSetContextNode(prop_vals, ctx);
 		obj = xmlXPathEvalExpression(BAD_CAST "enumeration|enum", ctx);
 
 		if (!xmlXPathNodeSetIsEmpty(obj->nodesetval)) {
@@ -3382,6 +3380,10 @@ static void add_ct_prop_vals(xmlDocPtr act, xmlDocPtr cct, const xmlChar *id, co
 						cv = xmlNodeGetContent(cur);
 						add = xmlStrcmp(c, cv) != 0;
 						xmlFree(cv);
+					}
+
+					if (defs) {
+						add &= is_applic(defs, (char *) id, (char *) type, (char *) c, true);
 					}
 
 					if (add) {
@@ -3409,7 +3411,7 @@ static void add_ct_prop_vals(xmlDocPtr act, xmlDocPtr cct, const xmlChar *id, co
 }
 
 /* Add a property used in an object to the properties report. */
-static void add_prop(xmlNodePtr object, xmlNodePtr assert, bool all, xmlDocPtr act, xmlDocPtr cct)
+static void add_prop(xmlNodePtr object, xmlNodePtr assert, enum listprops listprops, xmlDocPtr act, xmlDocPtr cct, xmlNodePtr defs)
 {
 	xmlChar *i, *t;
 	xmlNodePtr p = NULL, cur;
@@ -3420,7 +3422,7 @@ static void add_prop(xmlNodePtr object, xmlNodePtr assert, bool all, xmlDocPtr a
 	for (cur = object->children; cur && !p; cur = cur->next) {
 		xmlChar *ci, *ct;
 
-		ci = first_xpath_value(NULL, cur, BAD_CAST "@id");
+		ci = first_xpath_value(NULL, cur, BAD_CAST "@ident");
 		ct = first_xpath_value(NULL, cur, BAD_CAST "@type");
 
 		if (xmlStrcmp(i, ci) == 0 && xmlStrcmp(t, ct) == 0) {
@@ -3433,15 +3435,15 @@ static void add_prop(xmlNodePtr object, xmlNodePtr assert, bool all, xmlDocPtr a
 
 	if (!p) {
 		p = xmlNewChild(object, NULL, BAD_CAST "property", NULL);
-		xmlSetProp(p, BAD_CAST "id", i);
+		xmlSetProp(p, BAD_CAST "ident", i);
 		xmlSetProp(p, BAD_CAST "type", t);
 
-		if (all) {
-			add_ct_prop_vals(act, cct, i, t, p);
+		if (listprops != STANDALONE) {
+			add_ct_prop_vals(act, cct, i, t, p, defs);
 		}
 	}
 
-	if (!all) {
+	if (listprops == STANDALONE) {
 		xmlChar *v, *c = NULL;
 
 		v = first_xpath_value(NULL, assert, BAD_CAST "@applicPropertyValues|@actvalues");
@@ -3472,76 +3474,207 @@ static void add_prop(xmlNodePtr object, xmlNodePtr assert, bool all, xmlDocPtr a
 	xmlFree(t);
 }
 
-/* Add the properties used in an object to the properties report. */
-static void add_props(xmlNodePtr report, const char *path, bool all, const char *useract, const char *usercct)
+/* Determine whether a product instance is applicable to an object. */
+static bool product_is_applic(xmlNodePtr product, xmlNodePtr defs)
 {
-	xmlDocPtr doc, act = NULL, cct = NULL;
+	xmlNodePtr evaluate, cur;
+	bool is;
+
+	evaluate = xmlNewNode(NULL, BAD_CAST "evaluate");
+	xmlSetProp(evaluate, BAD_CAST "andOr", BAD_CAST "and");
+
+	for (cur = product->children; cur; cur = cur->next) {
+		xmlChar *i, *t, *v;
+		xmlNodePtr a;
+
+		if (cur->type != XML_ELEMENT_NODE) {
+			continue;
+		}
+
+		i = first_xpath_value(NULL, cur, BAD_CAST "@applicPropertyIdent|@actidref");
+		t = first_xpath_value(NULL, cur, BAD_CAST "@applicPropertyType|@actreftype");
+		v = first_xpath_value(NULL, cur, BAD_CAST "@applicPropertyValue|@actvalue");
+
+		a = xmlNewNode(evaluate->ns, BAD_CAST "assert");
+		xmlSetProp(a, BAD_CAST "applicPropertyIdent", i);
+		xmlSetProp(a, BAD_CAST "applicPropertyType", t);
+		xmlSetProp(a, BAD_CAST "applicPropertyValues", v);
+
+		xmlAddChild(evaluate, a);
+
+		xmlFree(i);
+		xmlFree(t);
+		xmlFree(v);
+	}
+
+	is = eval_evaluate(defs, evaluate, true);
+
+	xmlFreeNode(evaluate);
+
+	return is;
+}
+
+/* Add a PCT product instance to the properties report. */
+static void add_product(xmlNodePtr object, xmlNodePtr product, xmlNodePtr defs)
+{
+	xmlNodePtr p, cur;
+	xmlChar *id;
+
+	if (defs && !product_is_applic(product, defs)) {
+		return;
+	}
+
+	p = xmlNewNode(NULL, BAD_CAST "product");
+
+	if ((id = xmlGetProp(product, BAD_CAST "id"))) {
+		xmlSetProp(p, BAD_CAST "ident", id);
+		xmlFree(id);
+	}
+
+	for (cur = product->children; cur; cur = cur->next) {
+		xmlChar *i, *t, *v;
+		xmlNodePtr a;
+
+		if (cur->type != XML_ELEMENT_NODE) {
+			continue;
+		}
+
+		i = first_xpath_value(NULL, cur, BAD_CAST "@applicPropertyIdent|@actidref");
+		t = first_xpath_value(NULL, cur, BAD_CAST "@applicPropertyType|@actreftype");
+		v = first_xpath_value(NULL, cur, BAD_CAST "@applicPropertyValue|@actvalue");
+
+		a = xmlNewNode(p->ns, BAD_CAST "assign");
+		xmlSetProp(a, BAD_CAST "applicPropertyIdent", i);
+		xmlSetProp(a, BAD_CAST "applicPropertyType", t);
+		xmlSetProp(a, BAD_CAST "applicPropertyValue", v);
+
+		xmlAddChild(p, a);
+
+		xmlFree(i);
+		xmlFree(t);
+		xmlFree(v);
+	}
+
+	xmlAddChild(object, p);
+}
+
+/* Add the properties used in an object to the properties report. */
+static void add_props(xmlNodePtr report, const char *path, enum listprops listprops, const char *useract, const char *usercct, const char *userpct)
+{
+	xmlDocPtr doc, act = NULL, cct = NULL, pct = NULL;
 	xmlXPathContextPtr ctx;
 	xmlXPathObjectPtr obj;
-	xmlNodePtr object;
+	xmlNodePtr object, defs;
 
 	if (!(doc = read_xml_doc(path))) {
 		return;
 	}
 
-	if (all) {
-		char fname[PATH_MAX];
-
-		if (useract) {
-			if (!(act = read_xml_doc(useract))) {
-				if (verbosity > QUIET) {
-					fprintf(stderr, S_MISSING_ACT, useract);
-				}
-			}
-		} else if (find_act_fname(fname, doc)) {
-			if (!(act = read_xml_doc(fname))) {
-				if (verbosity > QUIET) {
-					fprintf(stderr, S_MISSING_ACT, fname);
-				}
-			}
-		}
-
-		if (act) {
-			if (usercct) {
-				if (!(cct = read_xml_doc(usercct))) {
-					if (verbosity > QUIET) {
-						fprintf(stderr, S_MISSING_CCT, usercct);
-					}
-				}
-			} else if (find_cct_fname(fname, act)) {
-				if (!(cct = read_xml_doc(fname))) {
-					if (verbosity > QUIET) {
-						fprintf(stderr, S_MISSING_CCT, fname);
-					}
-				}
-			}
-		}
+	if (listprops == APPLIC) {
+		defs = xmlNewNode(NULL, BAD_CAST "applic");
+		load_applic_from_inst(defs, doc);
+	} else {
+		defs = NULL;
 	}
 
 	object = xmlNewChild(report, NULL, BAD_CAST "object", NULL);
 	xmlSetProp(object, BAD_CAST "path", BAD_CAST path);
 
+	if (listprops != STANDALONE) {
+		char fname[PATH_MAX];
+
+		if (useract) {
+			if ((act = read_xml_doc(useract))) {
+				xmlSetProp(object, BAD_CAST "act", BAD_CAST useract);
+			} else if (verbosity > QUIET) {
+				fprintf(stderr, S_MISSING_ACT, useract);
+			}
+		} else if (find_act_fname(fname, doc)) {
+			if ((act = read_xml_doc(fname))) {
+				xmlSetProp(object, BAD_CAST "act", BAD_CAST fname);
+			} else if (verbosity > QUIET) {
+				fprintf(stderr, S_MISSING_ACT, fname);
+			}
+		}
+
+		if (usercct) {
+			if ((cct = read_xml_doc(usercct))) {
+				xmlSetProp(object, BAD_CAST "cct", BAD_CAST usercct);
+			} else if (verbosity > QUIET) {
+				fprintf(stderr, S_MISSING_CCT, usercct);
+			}
+		} else if (act && find_cct_fname(fname, act)) {
+			if ((cct = read_xml_doc(fname))) {
+				xmlSetProp(object, BAD_CAST "cct", BAD_CAST fname);
+			} else if (verbosity > QUIET) {
+				fprintf(stderr, S_MISSING_CCT, fname);
+			}
+		}
+
+		if (userpct) {
+			if ((pct = read_xml_doc(userpct))) {
+				xmlSetProp(object, BAD_CAST "pct", BAD_CAST userpct);
+			} else if (verbosity > QUIET) {
+				fprintf(stderr, S_MISSING_PCT, userpct);
+			}
+		} else if (act && find_pct_fname(fname, act)) {
+			if ((pct = read_xml_doc(fname))) {
+				xmlSetProp(object, BAD_CAST "pct", BAD_CAST fname);
+			} else if (verbosity > QUIET) {
+				fprintf(stderr, S_MISSING_PCT, fname);
+			}
+		}
+	}
+
+	/* Add properties from DM, ACT and/or CCT. */
 	ctx = xmlXPathNewContext(doc);
-	obj = xmlXPathEvalExpression(BAD_CAST "//assert", ctx);
+
+	/* Use assertions from the whole object applic in standalone mode. */
+	if (listprops == STANDALONE) {
+		obj = xmlXPathEvalExpression(BAD_CAST "//assert", ctx);
+	/* Otherwise, only use assertions from inline annotations. */
+	} else {
+		obj = xmlXPathEvalExpression(BAD_CAST "(//content|//inlineapplics)//assert", ctx);
+	}
 
 	if (!xmlXPathNodeSetIsEmpty(obj->nodesetval)) {
 		int i;
 
 		for (i = 0; i < obj->nodesetval->nodeNr; ++i) {
-			add_prop(object, obj->nodesetval->nodeTab[i], all, act, cct);
+			add_prop(object, obj->nodesetval->nodeTab[i], listprops, act, cct, defs);
 		}
 	}
 
 	xmlXPathFreeObject(obj);
 	xmlXPathFreeContext(ctx);
 
+	/* Add products from PCT. */
+	if (pct) {
+		ctx = xmlXPathNewContext(pct);
+		obj = xmlXPathEval(BAD_CAST "//product", ctx);
+
+		if (!xmlXPathNodeSetIsEmpty(obj->nodesetval)) {
+			int i;
+
+			for (i = 0; i < obj->nodesetval->nodeNr; ++i) {
+				add_product(object, obj->nodesetval->nodeTab[i], defs);
+			}
+		}
+
+		xmlXPathFreeObject(obj);
+		xmlXPathFreeContext(ctx);
+	}
+
+	xmlFreeNode(defs);
+
 	xmlFreeDoc(act);
 	xmlFreeDoc(cct);
+	xmlFreeDoc(pct);
 	xmlFreeDoc(doc);
 }
 
 /* Add the properties used in objects in a list to the properties report. */
-static void add_props_list(xmlNodePtr report, const char *fname, bool all, const char *useract, const char *usercct)
+static void add_props_list(xmlNodePtr report, const char *fname, enum listprops listprops, const char *useract, const char *usercct, const char *userpct)
 {
 	FILE *f;
 	char path[PATH_MAX];
@@ -3559,7 +3692,7 @@ static void add_props_list(xmlNodePtr report, const char *fname, bool all, const
 
 	while (fgets(path, PATH_MAX, f)) {
 		strtok(path, "\t\r\n");
-		add_props(report, path, all, useract, usercct);
+		add_props(report, path, listprops, useract, usercct, userpct);
 	}
 
 	if (fname) {
@@ -3917,11 +4050,11 @@ xmlDocPtr s1kdDocFilter(const xmlDocPtr doc, s1kdApplicability app, s1kdFilterMo
 
 		clean_applic(referencedApplicGroup, root);
 
-		if (mode >= S1KD_FILTER_SIMPLIFY && xmlChildElementCount(referencedApplicGroup) != 0) {
-			simpl_applic_clean(app, referencedApplicGroup, mode == S1KD_FILTER_PRUNE);
+		if (mode >= S1KD_FILTER_SIMPLIFY && referencedApplicGroup) {
+			referencedApplicGroup = simpl_applic_clean(app, referencedApplicGroup, mode == S1KD_FILTER_PRUNE);
 		}
 
-		if (mode != S1KD_FILTER_PRUNE && xmlChildElementCount(referencedApplicGroup) != 0) {
+		if (mode != S1KD_FILTER_PRUNE && referencedApplicGroup) {
 			referencedApplicGroup = rem_supersets(app, referencedApplicGroup, root, mode < S1KD_FILTER_SIMPLIFY);
 		}
 	}
@@ -3989,7 +4122,7 @@ static void show_help(void)
 	puts("  -q, --quiet                       Quiet mode.");
 	puts("  -R, --cir <CIR>                   Resolve externalized items using the given CIR.");
 	puts("  -r, --recursive                   Search for referenced data modules recursively.");
-	puts("  -S, --no-source-ident             Do not include <sourceDmIdent> or <repositorySourceDmIdent>.");
+	puts("  -S, --no-source-ident             Do not include <sourceDmIdent>/<sourcePmIdent>.");
 	puts("  -s, --assign <applic>             An assign in the form of <ident>:<type>=<value>");
 	puts("  -T, --tag                         Tag non-applicable elements instead of removing them.");
 	puts("  -t, --techname <techName>         Give the instance a different techName/pmTitle.");
@@ -4007,6 +4140,7 @@ static void show_help(void)
 	puts("  -z, --issue-type <type>           Set the issue type of the instance.");
 	puts("  -1, --act <file>                  Specify custom ACT.");
 	puts("  -2, --cct <file>                  Specify custom CCT.");
+	puts("  -3, --no-repository-ident         Do not include <repositorySourceDmIdent>.");
 	puts("  -4, --flatten-alts-refs           Flatten alts elements and adjust cross-references to them.");
 	puts("  -5, --print                       Print the file name of the instance when -O is used.");
 	puts("  -6, --clean-annotations           Remove unused applicability annotations.");
@@ -4038,6 +4172,12 @@ int main(int argc, char **argv)
 
 	int i, c;
 
+	/* User-defined applicability */
+	xmlNodePtr applicability;
+
+	/* Number of user-defined applicability definitions. */
+	int napplics = 0;
+
 	char code[256] = "";
 	char out[PATH_MAX] = "-";
 	bool clean = false;
@@ -4054,6 +4194,7 @@ int main(int argc, char **argv)
 	char extension[256] = "";
 	char language[256] = "";
 	bool add_source_ident = true;
+	bool add_rep_ident = true;
 	bool force_overwrite = false;
 	bool use_stdin = false;
 	char issinfo[16] = "";
@@ -4106,74 +4247,75 @@ int main(int argc, char **argv)
 	xmlDocPtr def_cir_xsl = NULL;
 
 	xmlDocPtr props_report = NULL;
-	bool all_props = false;
+	enum listprops listprops = STANDALONE;
 
-	const char *sopts = "AaC:c:D:d:Ee:FfG:gh?I:i:JjK:k:Ll:m:Nn:O:o:P:p:QqR:rSs:Tt:U:u:V:vWwX:x:Y:yZz:@%!1:2:4567890~H:^";
+	const char *sopts = "AaC:c:D:d:Ee:FfG:gh?I:i:JjK:k:Ll:m:Nn:O:o:P:p:QqR:rSs:Tt:U:u:V:vWwX:x:Y:yZz:@%!1:2:34567890~H:^";
 	struct option lopts[] = {
-		{"version"           , no_argument      , 0, 0},
-		{"help"              , no_argument      , 0, 'h'},
-		{"reduce"            , no_argument      , 0, 'a'},
-		{"simplify"          , no_argument      , 0, 'A'},
-		{"code"              , required_argument, 0, 'c'},
-		{"comment"           , required_argument, 0, 'C'},
-		{"dump"              , required_argument, 0, 'D'},
-		{"dir"               , required_argument, 0, 'd'},
-		{"no-extension"      , no_argument      , 0, 'E'},
-		{"extension"         , required_argument, 0, 'e'},
-		{"flatten-alts"      , no_argument      , 0, 'F'},
-		{"overwrite"         , no_argument      , 0, 'f'},
-		{"set-orig"          , no_argument      , 0, 'g'},
-		{"custom-orig"       , required_argument, 0, 'G'},
-		{"infoname"          , required_argument, 0, 'i'},
-		{"date"              , required_argument, 0, 'I'},
-		{"clean-display-text", no_argument      , 0, 'J'},
-		{"clean-ents"        , no_argument      , 0, 'j'},
-		{"skill-levels"      , required_argument, 0, 'K'},
-		{"skill"             , required_argument, 0, 'k'},
-		{"list"              , no_argument      , 0, 'L'},
-		{"language"          , required_argument, 0, 'l'},
-		{"remarks"           , required_argument, 0, 'm'},
-		{"omit-issue"        , no_argument      , 0, 'N'},
-		{"issue"             , required_argument, 0, 'n'},
-		{"outdir"            , required_argument, 0, 'O'},
-		{"out"               , required_argument, 0, 'o'},
-		{"pct"               , required_argument, 0, 'P'},
-		{"product"           , required_argument, 0, 'p'},
-		{"quiet"             , no_argument      , 0, 'q'},
-		{"cir"               , required_argument, 0, 'R'},
-		{"recursive"         , no_argument      , 0, 'r'},
-		{"no-source-ident"   , no_argument      , 0, 'S'},
-		{"assign"            , required_argument, 0, 's'},
-		{"tag"               , no_argument      , 0, 'T'},
-		{"techname"          , required_argument, 0, 't'},
-		{"security-classes"  , required_argument, 0, 'U'},
-		{"security"          , required_argument, 0, 'u'},
-		{"print"             , no_argument      , 0, '5'},
-		{"verbose"           , no_argument      , 0, 'v'},
-		{"set-applic"        , no_argument      , 0, 'W'},
-		{"whole-objects"     , no_argument      , 0, 'w'},
-		{"comment-xpath"     , required_argument, 0, 'X'},
-		{"xsl"               , required_argument, 0, 'x'},
-		{"applic"            , required_argument, 0, 'Y'},
-		{"update-applic"     , no_argument      , 0 ,'y'},
-		{"add-required"      , no_argument      , 0, 'Z'},
-		{"issue-type"        , required_argument, 0, 'z'},
-		{"update-instances"  , no_argument      , 0, '@'},
-		{"read-only"         , no_argument      , 0, '%'},
-		{"no-infoname"       , no_argument      , 0, '!'},
-		{"act"               , required_argument, 0, '1'},
-		{"cct"               , required_argument, 0, '2'},
-		{"dependencies"      , no_argument      , 0, '~'},
-		{"resolve-containers", no_argument      , 0, 'Q'},
-		{"flatten-alts-refs" , no_argument      , 0, '4'},
-		{"list-properties"   , required_argument, 0, 'H'},
-		{"infoname-variant"  , required_argument, 0, 'V'},
-		{"clean-annotations" , no_argument      , 0, '6'},
-		{"dry-run"           , no_argument      , 0, '7'},
-		{"reapply"           , no_argument      , 0, '8'},
-		{"prune"             , no_argument      , 0, '9'},
-		{"print-non-applic"  , no_argument      , 0, '0'},
-		{"remove-deleted"    , no_argument      , 0, '^'},
+		{"version"            , no_argument      , 0, 0},
+		{"help"               , no_argument      , 0, 'h'},
+		{"reduce"             , no_argument      , 0, 'a'},
+		{"simplify"           , no_argument      , 0, 'A'},
+		{"code"               , required_argument, 0, 'c'},
+		{"comment"            , required_argument, 0, 'C'},
+		{"dump"               , required_argument, 0, 'D'},
+		{"dir"                , required_argument, 0, 'd'},
+		{"no-extension"       , no_argument      , 0, 'E'},
+		{"extension"          , required_argument, 0, 'e'},
+		{"flatten-alts"       , no_argument      , 0, 'F'},
+		{"overwrite"          , no_argument      , 0, 'f'},
+		{"set-orig"           , no_argument      , 0, 'g'},
+		{"custom-orig"        , required_argument, 0, 'G'},
+		{"infoname"           , required_argument, 0, 'i'},
+		{"date"               , required_argument, 0, 'I'},
+		{"clean-display-text" , no_argument      , 0, 'J'},
+		{"clean-ents"         , no_argument      , 0, 'j'},
+		{"skill-levels"       , required_argument, 0, 'K'},
+		{"skill"              , required_argument, 0, 'k'},
+		{"list"               , no_argument      , 0, 'L'},
+		{"language"           , required_argument, 0, 'l'},
+		{"remarks"            , required_argument, 0, 'm'},
+		{"omit-issue"         , no_argument      , 0, 'N'},
+		{"issue"              , required_argument, 0, 'n'},
+		{"outdir"             , required_argument, 0, 'O'},
+		{"out"                , required_argument, 0, 'o'},
+		{"pct"                , required_argument, 0, 'P'},
+		{"product"            , required_argument, 0, 'p'},
+		{"quiet"              , no_argument      , 0, 'q'},
+		{"cir"                , required_argument, 0, 'R'},
+		{"recursive"          , no_argument      , 0, 'r'},
+		{"no-source-ident"    , no_argument      , 0, 'S'},
+		{"assign"             , required_argument, 0, 's'},
+		{"tag"                , no_argument      , 0, 'T'},
+		{"techname"           , required_argument, 0, 't'},
+		{"security-classes"   , required_argument, 0, 'U'},
+		{"security"           , required_argument, 0, 'u'},
+		{"print"              , no_argument      , 0, '5'},
+		{"verbose"            , no_argument      , 0, 'v'},
+		{"set-applic"         , no_argument      , 0, 'W'},
+		{"whole-objects"      , no_argument      , 0, 'w'},
+		{"comment-xpath"      , required_argument, 0, 'X'},
+		{"xsl"                , required_argument, 0, 'x'},
+		{"applic"             , required_argument, 0, 'Y'},
+		{"update-applic"      , no_argument      , 0 ,'y'},
+		{"add-required"       , no_argument      , 0, 'Z'},
+		{"issue-type"         , required_argument, 0, 'z'},
+		{"update-instances"   , no_argument      , 0, '@'},
+		{"read-only"          , no_argument      , 0, '%'},
+		{"no-infoname"        , no_argument      , 0, '!'},
+		{"act"                , required_argument, 0, '1'},
+		{"cct"                , required_argument, 0, '2'},
+		{"dependencies"       , no_argument      , 0, '~'},
+		{"resolve-containers" , no_argument      , 0, 'Q'},
+		{"no-repository-ident", no_argument      , 0, '3'},
+		{"flatten-alts-refs"  , no_argument      , 0, '4'},
+		{"list-properties"    , required_argument, 0, 'H'},
+		{"infoname-variant"   , required_argument, 0, 'V'},
+		{"clean-annotations"  , no_argument      , 0, '6'},
+		{"dry-run"            , no_argument      , 0, '7'},
+		{"reapply"            , no_argument      , 0, '8'},
+		{"prune"              , no_argument      , 0, '9'},
+		{"print-non-applic"   , no_argument      , 0, '0'},
+		{"remove-deleted"     , no_argument      , 0, '^'},
 		LIBXML2_PARSE_LONGOPT_DEFS
 		{0, 0, 0, 0}
 	};
@@ -4198,7 +4340,7 @@ int main(int argc, char **argv)
 					show_version();
 					goto cleanup;
 				}
-				LIBXML2_PARSE_LONGOPT_HANDLE(lopts, loptind)
+				LIBXML2_PARSE_LONGOPT_HANDLE(lopts, loptind, optarg)
 				break;
 			case 'a':
 				clean = true;
@@ -4315,7 +4457,7 @@ int main(int argc, char **argv)
 				add_source_ident = false;
 				break;
 			case 's':
-				read_applic(optarg);
+				read_applic(applicability, &napplics, optarg);
 				break;
 			case 'T':
 				tag_non_applic = true;
@@ -4377,6 +4519,9 @@ int main(int argc, char **argv)
 			case '~':
 				add_deps = true;
 				break;
+			case '3':
+				add_rep_ident = false;
+				break;
 			case '4':
 				flat_alts = true;
 				fix_alts_refs = true;
@@ -4407,7 +4552,9 @@ int main(int argc, char **argv)
 					props_report = xmlNewDoc(BAD_CAST "1.0");
 
 					if (strcmp(optarg, "all") == 0) {
-						all_props = true;
+						listprops = ALL;
+					} else if (strcmp(optarg, "applic") == 0) {
+						listprops = APPLIC;
 					}
 				}
 				break;
@@ -4428,20 +4575,32 @@ int main(int argc, char **argv)
 		properties = xmlNewNode(NULL, BAD_CAST "properties");
 		xmlDocSetRootElement(props_report, properties);
 
+		switch (listprops) {
+			case STANDALONE:
+				xmlSetProp(properties, BAD_CAST "method", BAD_CAST "standalone");
+				break;
+			case ALL:
+				xmlSetProp(properties, BAD_CAST "method", BAD_CAST "all");
+				break;
+			case APPLIC:
+				xmlSetProp(properties, BAD_CAST "method", BAD_CAST "applic");
+				break;
+		}
+
 		if (optind < argc) {
 			int i;
 
 			for (i = optind; i < argc; ++i) {
 				if (dmlist) {
-					add_props_list(properties, argv[i], all_props, useract, usercct);
+					add_props_list(properties, argv[i], listprops, useract, usercct, userpct);
 				} else {
-					add_props(properties, argv[i], all_props, useract, usercct);
+					add_props(properties, argv[i], listprops, useract, usercct, userpct);
 				}
 			}
 		} else if (dmlist) {
-			add_props_list(properties, NULL, all_props, useract, usercct);
+			add_props_list(properties, NULL, listprops, useract, usercct, userpct);
 		} else {
-			add_props(properties, "-", all_props, useract, usercct);
+			add_props(properties, "-", listprops, useract, usercct, userpct);
 		}
 
 		transform_doc(props_report, xsl_sort_props_xsl, xsl_sort_props_xsl_len, NULL);
@@ -4449,6 +4608,18 @@ int main(int argc, char **argv)
 		save_xml_doc(props_report, "-");
 
 		goto cleanup;
+	}
+
+	/* Except when in update mode, only add a source ident by default if
+	 * any of the following are changed in the instance:
+	 *
+	 * - extension
+	 * - code
+	 * - issue info
+	 * - language
+	 */
+	if (!update_inst && strcmp(extension, "") == 0 && strcmp(code, "") == 0 && strcmp(issinfo, "") == 0 && strcmp(language, "") == 0) {
+		add_source_ident = false;
 	}
 
 	if (find_cir) {
@@ -4523,7 +4694,7 @@ int main(int argc, char **argv)
 		/* If a PCT filename is specified with -P, use that for all data
 		 * modules and ignore their individual ACT->PCT refs. */
 		if (pct) {
-			load_applic_from_pct(pct, userpct, product);
+			load_applic_from_pct(applicability, &napplics, pct, userpct, product);
 		/* Otherwise the PCT must be loaded separately for each data
 		 * module, since they may reference different ones. */
 		} else {
@@ -4622,7 +4793,7 @@ int main(int argc, char **argv)
 				fprintf(stderr, I_UPDATE_INST, inst_src, src);
 			}
 
-			load_applic_from_inst(inst);
+			load_applic_from_inst(applicability, inst);
 			load_skill_from_inst(inst, &skill_codes);
 			load_sec_from_inst(inst, &sec_classes);
 			load_metadata_from_inst(inst,
@@ -4687,7 +4858,7 @@ int main(int argc, char **argv)
 				char fname[PATH_MAX];
 				if (find_pct_fname(fname, act)) {
 					if ((pct = read_xml_doc(fname))) {
-						load_applic_from_pct(pct, fname, product);
+						load_applic_from_pct(applicability, &napplics, pct, fname, product);
 						xmlFreeDoc(pct);
 					}
 				}
@@ -4699,7 +4870,7 @@ int main(int argc, char **argv)
 			}
 
 			if (re_applic) {
-				load_applic_from_inst(doc);
+				load_applic_from_inst(applicability, doc);
 			}
 
 			if (!wholedm || create_instance(doc, applicability, skill_codes, sec_classes, delete)) {
@@ -4736,7 +4907,7 @@ int main(int argc, char **argv)
 					if (ispm) {
 						root = undepend_cir(doc, applicability, cirdocfname, false, cirxsl, def_cir_xsl);
 					} else {
-						root = undepend_cir(doc, applicability, cirdocfname, add_source_ident, cirxsl, def_cir_xsl);
+						root = undepend_cir(doc, applicability, cirdocfname, add_rep_ident, cirxsl, def_cir_xsl);
 					}
 
 					xmlFree(cirdocfname);
@@ -4772,18 +4943,18 @@ int main(int argc, char **argv)
 
 							clean_applic(referencedApplicGroup, root);
 
-							if (simpl && xmlChildElementCount(referencedApplicGroup) != 0) {
-								simpl_applic_clean(applicability, referencedApplicGroup, remtrue);
+							if (simpl && referencedApplicGroup) {
+								referencedApplicGroup = simpl_applic_clean(applicability, referencedApplicGroup, remtrue);
 							}
 
-							if (remtrue && xmlChildElementCount(referencedApplicGroup) != 0) {
+							if (remtrue && referencedApplicGroup) {
 								referencedApplicGroup = rem_supersets(applicability, referencedApplicGroup, root, !simpl);
 							}
 						}
 					}
 
-					if (rem_unused) {
-						rem_unused_annotations(doc);
+					if (rem_unused && referencedApplicGroup) {
+						referencedApplicGroup = rem_unused_annotations(doc, referencedApplicGroup);
 					}
 				}
 
@@ -4832,7 +5003,7 @@ int main(int argc, char **argv)
 						simpl_whole_applic(applicability, doc, remtrue);
 					}
 
-					set_applic(doc, new_display_text, combine_applic);
+					set_applic(doc, applicability, napplics, new_display_text, combine_applic);
 				}
 
 				if (strcmp(issinfo, "") != 0) {
@@ -4928,7 +5099,7 @@ int main(int argc, char **argv)
 			 * assigns must be cleared. Those directly set with -s will
 			 * carry over. */
 			if (load_applic_per_dm) {
-				clear_perdm_applic();
+				clear_perdm_applic(applicability, &napplics);
 			}
 
 			xmlFreeDoc(doc);

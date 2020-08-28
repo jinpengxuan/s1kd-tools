@@ -5,13 +5,16 @@
 #include <stdbool.h>
 #include <libxml/tree.h>
 #include <libxml/xpath.h>
+#include <libxml/xpathInternals.h>
+#include <libxml/c14n.h>
 #include <libxslt/transform.h>
+#include <libexslt/exslt.h>
 #include "s1kd_tools.h"
 #include "stylesheets.h"
 
 /* Program name and version information. */
 #define PROG_NAME "s1kd-appcheck"
-#define VERSION "5.7.1"
+#define VERSION "6.2.0"
 
 /* Message prefixes. */
 #define ERR_PREFIX PROG_NAME ": ERROR: "
@@ -42,6 +45,8 @@
 #define E_PROPCHECK_VAL ERR_PREFIX "%s: %s is not a defined value of %s %s (line %ld)\n"
 #define E_NESTEDCHECK ERR_PREFIX "%s: %s on line %ld is applicable when %s %s = %s, which is not a subset of the applicability of the parent %s on line %ld\n"
 #define E_NESTEDCHECK_WHOLE ERR_PREFIX "%s: %s on line %ld is applicable when %s %s = %s, which is not a subset of the applicability of the whole object.\n"
+#define E_NESTEDCHECK_REDUNDANT ERR_PREFIX "%s: %s on line %ld has the same applicability as its parent %s on line %ld (%s)\n"
+#define E_DUPLICATECHECK ERR_PREFIX "%s: Annotation on line %ld is a duplicate of annotation on line %ld.\n"
 #define E_MAX_OBJECTS ERR_PREFIX "Out of memory\n"
 
 /* Warning messages. */
@@ -61,6 +66,9 @@
 #define DEFAULT_FILTER "s1kd-instance"
 #define DEFAULT_VALIDATE "s1kd-validate"
 #define DEFAULT_BREXCHECK "s1kd-brexcheck"
+
+/* Namespace for special elements/attributes. */
+#define S1KD_APPCHECK_NS BAD_CAST "urn:s1kd-tools:s1kd-appcheck"
 
 /* Initial maximum number of CSDB object paths. */
 static int OBJECT_MAX = 1;
@@ -100,6 +108,8 @@ struct appcheckopts {
 	bool add_deps;
 	bool check_props;
 	bool check_nested;
+	bool check_redundant;
+	bool check_duplicate;
 	bool rem_delete;
 	enum appcheckmode mode;
 };
@@ -115,6 +125,7 @@ static void show_help(void)
 	puts("  -b, --brexcheck        Validate against BREX.");
 	puts("  -C, --cct <file>       User-specified CCT.");
 	puts("  -c, --custom           Perform a customized check.");
+	puts("  -D, --duplicate        Check for duplicate applicability annotations.");
 	puts("  -d, --dir <dir>        Search for ACT/CCT/PCT in <dir>.");
 	puts("  -e, --exec <cmd>       Commands used to validate objects.");
 	puts("  -F, --valid-filenames  List valid files.");
@@ -129,6 +140,7 @@ static void show_help(void)
 	puts("  -P, --pct <file>       User-specified PCT.");
 	puts("  -p, --progress         Display a progress bar.");
 	puts("  -q, --quiet            Quiet mode.");
+	puts("  -R, --redundant        Check for redundant applicability annotations.");
 	puts("  -r, --recursive        Search for ACT/CCT/PCT recursively.");
 	puts("  -s, --strict           Check that all properties are defined.");
 	puts("  -T, --summary          Print a summary of the check.");
@@ -350,16 +362,83 @@ static bool find_pct_fname(char *dst, const char *userpct, xmlDocPtr act)
 }
 
 /* Add a nested applic error to the report. */
-static xmlNodePtr add_nested_error(xmlNodePtr report, xmlNodePtr node, xmlNodePtr parent, const xmlChar *id, const xmlChar *type, const xmlChar *val, long int cline, long int pline)
+static xmlNodePtr add_nested_error(xmlNodePtr report, xmlNodePtr node, xmlNodePtr parent, const xmlChar *id, const xmlChar *type, const xmlChar *val, const char *path)
 {
 	xmlNodePtr und;
+	long int cline, pline;
 	xmlChar line_s[16], *xpath;
+
+	cline = xmlGetLineNo(node);
+	pline = xmlGetLineNo(parent);
+
+	if (verbosity >= NORMAL) {
+		if (parent) {
+			fprintf(stderr, E_NESTEDCHECK,
+				path,
+				(char *) node->name,
+				cline,
+				(char *) type,
+				(char *) id,
+				(char *) val,
+				(char *) parent->name,
+				pline);
+		} else {
+			fprintf(stderr, E_NESTEDCHECK_WHOLE,
+				path,
+				(char *) node->name,
+				cline,
+				(char *) type,
+				(char *) id,
+				(char *) val);
+		}
+	}
 
 	und = xmlNewChild(report, NULL, BAD_CAST "nestedApplicError", NULL);
 
 	xmlSetProp(und, BAD_CAST "applicPropertyIdent", id);
 	xmlSetProp(und, BAD_CAST "applicPropertyType", type);
 	xmlSetProp(und, BAD_CAST "applicPropertyValue", val);
+
+	xmlStrPrintf(line_s, 16, "%ld", cline);
+	xmlSetProp(und, BAD_CAST "line", line_s);
+
+	xpath = xpath_of(node);
+	xmlSetProp(und, BAD_CAST "xpath", xpath);
+	xmlFree(xpath);
+
+	if (parent) {
+		xmlStrPrintf(line_s, 16, "%ld", pline);
+		xmlSetProp(und, BAD_CAST "parentLine", line_s);
+
+		xpath = xpath_of(parent);
+		xmlSetProp(und, BAD_CAST "parentXpath", xpath);
+		xmlFree(xpath);
+	}
+
+	return und;
+}
+
+/* Add a redundant applicability error to the report. */
+static xmlNodePtr add_redundant_error(xmlNodePtr report, xmlNodePtr node, xmlNodePtr parent, const xmlChar *id, const char *path)
+{
+	xmlNodePtr und;
+	long int cline, pline;
+	xmlChar line_s[16], *xpath;
+
+	cline = xmlGetLineNo(node);
+	pline = xmlGetLineNo(parent);
+
+	if (verbosity >= NORMAL) {
+		fprintf(stderr, E_NESTEDCHECK_REDUNDANT,
+			path,
+			(char *) node->name,
+			cline,
+			(char *) parent->name,
+			pline,
+			(char *) id);
+	}
+
+	und = xmlNewChild(report, NULL, BAD_CAST "redundantApplicError", NULL);
 
 	xmlStrPrintf(line_s, 16, "%ld", cline);
 	xmlSetProp(und, BAD_CAST "line", line_s);
@@ -421,34 +500,7 @@ static int check_nested_applic_val(xmlNodePtr node, xmlNodePtr parent, xmlNodePt
 	if (match) {
 		return 0;
 	} else {
-		long int cline, pline;
-
-		cline = xmlGetLineNo(node);
-		pline = xmlGetLineNo(parent);
-
-		if (verbosity >= NORMAL) {
-			if (parent) {
-				fprintf(stderr, E_NESTEDCHECK,
-					path,
-					(char *) node->name,
-					cline,
-					(char *) type,
-					(char *) id,
-					(char *) val,
-					(char *) parent->name,
-					pline);
-			} else {
-				fprintf(stderr, E_NESTEDCHECK_WHOLE,
-					path,
-					(char *) node->name,
-					cline,
-					(char *) type,
-					(char *) id,
-					(char *) val);
-			}
-		}
-
-		add_nested_error(report, node, parent, id, type, val, cline, pline);
+		add_nested_error(report, node, parent, id, type, val, path);
 	}
 
 	return 1;
@@ -551,40 +603,13 @@ static void check_nested_applic_add_assert(xmlNodePtr props, xmlNodePtr assert)
 	xmlFree(vals);
 }
 
-/* Check that an applicability annotation is a subset of any parent annotation. */
-static int check_nested_applic(xmlDocPtr doc, xmlNodePtr node, const char *path, xmlNodePtr report)
+/* Check that an applicability annotation is a subset of a given parent annotation. */
+static int check_nested_applic_props(xmlDocPtr doc, const char *path, xmlNodePtr node, xmlNodePtr parent, xmlNodePtr app, xmlNodePtr parent_app, xmlNodePtr report)
 {
-	xmlNodePtr app, parent_app, parent, props;
-	xmlChar *id, *xpath;
-	int n, err = 0;
+	xmlNodePtr props;
 	xmlXPathContextPtr ctx;
 	xmlXPathObjectPtr obj;
-
-	id = first_xpath_value(doc, node, BAD_CAST "@applicRefId|@refapplic");
-	n = xmlStrlen(id) + 17;
-	xpath = malloc(n * sizeof(xmlChar));
-	xmlStrPrintf(xpath, n, "//applic[@id='%s']", id);
-	app = first_xpath_node(doc, NULL, xpath);
-	xmlFree(xpath);
-	xmlFree(id);
-
-	parent = first_xpath_node(doc, node, BAD_CAST "ancestor::*[@applicRefId or @refapplic]");
-
-	if (parent) {
-		xmlChar *parent_id;
-		parent_id = first_xpath_value(doc, parent, BAD_CAST "@applicRefId|@refapplic");
-		n = xmlStrlen(parent_id) + 100;
-		xpath = malloc(n * sizeof(xmlChar));
-		xmlStrPrintf(xpath, n, "//applic[@id='%s']", parent_id);
-		parent_app = first_xpath_node(doc, NULL, xpath);
-		xmlFree(xpath);
-		xmlFree(parent_id);
-	} else {
-		/* If there is no parent annotation within the content of the object,
-		 * then use the annotation for the whole object.
-		 */
-		parent_app = first_xpath_node(doc, node, BAD_CAST "//applic");
-	}
+	int err = 0;
 
 	props = xmlNewNode(NULL, BAD_CAST "props");
 
@@ -625,8 +650,84 @@ static int check_nested_applic(xmlDocPtr doc, xmlNodePtr node, const char *path,
 	return err;
 }
 
+/* Check for redundant applicability.
+ *
+ * FIXME: This is a very rudimentary implementation that only checks if the
+ *        EXACT annotation is repeated on child elements. In the future, this
+ *        should also check if logic between parent and child annotations is
+ *        redundant.
+ */
+static int check_redundant_applic(const char *path, xmlNodePtr node, const xmlChar *id, xmlNodePtr parent, const xmlChar *parent_id, xmlNodePtr report)
+{
+	if (xmlStrcmp(id, parent_id) == 0) {
+		add_redundant_error(report, node, parent, id, path);
+		return 1;
+	}
+
+	return 0;
+}
+
+/* Check that an applicability annotation is a subset of any parent annotation. */
+static int check_nested_applic(xmlDocPtr doc, xmlNodePtr node, const char *path, struct appcheckopts *opts, xmlNodePtr report)
+{
+	xmlNodePtr app, parent_app, parent;
+	xmlChar *id, *xpath;
+	int n, err = 0;
+
+	/* Get annotation of the current node. */
+	id = first_xpath_value(doc, node, BAD_CAST "@applicRefId|@refapplic");
+	n = xmlStrlen(id) + 17;
+	xpath = malloc(n * sizeof(xmlChar));
+	xmlStrPrintf(xpath, n, "//applic[@id='%s']", id);
+	app = first_xpath_node(doc, NULL, xpath);
+	xmlFree(xpath);
+
+	/* Check against the applicability of each parent. */
+	parent = node->parent;
+	while (parent && parent->type == XML_ELEMENT_NODE) {
+		xmlChar *parent_id;
+
+		parent_id = first_xpath_value(doc, parent, BAD_CAST "@applicRefId|@refapplic");
+
+		if (parent_id != NULL) {
+			/* Get annotation of the parent node. */
+			n = xmlStrlen(parent_id) + 100;
+			xpath = malloc(n * sizeof(xmlChar));
+			xmlStrPrintf(xpath, n, "//applic[@id='%s']", parent_id);
+			parent_app = first_xpath_node(doc, NULL, xpath);
+			xmlFree(xpath);
+
+			/* Check for incompatible annotations. */
+			if (opts->check_nested && check_nested_applic_props(doc, path, node, parent, app, parent_app, report) != 0) {
+				err = 1;
+			}
+
+			/* Check for redundant annotations. */
+			if (opts->check_redundant && check_redundant_applic(path, node, id, parent, parent_id, report) != 0) {
+				err = 1;
+			}
+		}
+
+		xmlFree(parent_id);
+
+		parent = parent->parent;
+	}
+
+	xmlFree(id);
+
+	/* Check against the whole object applicability. */
+	if ((parent_app = first_xpath_node(doc, node, BAD_CAST "//applic"))) {
+		/* Check for incompatible annotations. */
+		if (opts->check_nested && check_nested_applic_props(doc, path, node, NULL, app, parent_app, report) != 0) {
+			err = 1;
+		}
+	}
+
+	return err != 0;
+}
+
 /* Check that all applicability annotations are subsets of their parent annotations. */
-static int check_nested_applics(xmlDocPtr doc, const char *path, xmlNodePtr report)
+static int check_nested_applics(xmlDocPtr doc, const char *path, struct appcheckopts *opts, xmlNodePtr report)
 {
 	xmlXPathContextPtr ctx;
 	xmlXPathObjectPtr obj;
@@ -644,7 +745,7 @@ static int check_nested_applics(xmlDocPtr doc, const char *path, xmlNodePtr repo
 		int i;
 
 		for (i = 0; i < obj->nodesetval->nodeNr; ++i) {
-			err += check_nested_applic(doc, obj->nodesetval->nodeTab[i], path, report);
+			err += check_nested_applic(doc, obj->nodesetval->nodeTab[i], path, opts, report);
 		}
 	}
 
@@ -1119,6 +1220,119 @@ static xmlNodePtr add_object_node(xmlNodePtr parent, const char *name, const cha
 	return node;
 }
 
+/* Add a string to each annotation that uniquely identifies it. */
+static void add_unique_applic_strings(xmlDocPtr doc)
+{
+	transform_doc(doc, duplicate_xsl, duplicate_xsl_len, NULL);
+}
+
+/* Remove the unique identifier strings from annotations. */
+static void rem_unique_applic_strings(xmlDocPtr doc)
+{
+	transform_doc(doc, clean_duplicate_xsl, clean_duplicate_xsl_len, NULL);
+}
+
+/* Add a duplicate applicability error to the report. */
+static xmlNodePtr add_duplicate_error(xmlNodePtr report, xmlNodePtr node1, xmlNodePtr node2, const char *path)
+{
+	xmlNodePtr error;
+	long int line1, line2;
+	xmlChar line_s[16], *xpath;
+
+	line1 = xmlGetLineNo(node1);
+	line2 = xmlGetLineNo(node2);
+
+	if (verbosity >= NORMAL) {
+		fprintf(stderr, E_DUPLICATECHECK,
+			path,
+			line2,
+			line1);
+	}
+
+	error = xmlNewChild(report, NULL, BAD_CAST "duplicateApplicError", NULL);
+
+	xmlStrPrintf(line_s, 16, "%ld", line2);
+	xmlSetProp(error, BAD_CAST "line", line_s);
+
+	xpath = xpath_of(node2);
+	xmlSetProp(error, BAD_CAST "xpath", xpath);
+	xmlFree(xpath);
+
+	xmlStrPrintf(line_s, 16, "%ld", line1);
+	xmlSetProp(error, BAD_CAST "duplicateOfLine", line_s);
+
+	xpath = xpath_of(node1);
+	xmlSetProp(error, BAD_CAST "duplicateOfXPath", xpath);
+	xmlFree(xpath);
+
+	return error;
+}
+
+static bool same_annotation(xmlNodePtr app1, xmlNodePtr app2)
+{
+	xmlDocPtr d1, d2;
+	xmlChar *s1, *s2;
+	bool same;
+
+	/* Compare c14n representation of XML to
+	 * determine if the annotations are duplicates.
+	 */
+	d1 = xmlNewDoc(BAD_CAST "1.0");
+	d2 = xmlNewDoc(BAD_CAST "1.0");
+
+	xmlDocSetRootElement(d1, xmlCopyNode(app1, 1));
+	xmlDocSetRootElement(d2, xmlCopyNode(app2, 1));
+
+	xmlC14NDocDumpMemory(d1, NULL, XML_C14N_1_0, NULL, 0, &s1);
+	xmlC14NDocDumpMemory(d2, NULL, XML_C14N_1_0, NULL, 0, &s2);
+
+	same = xmlStrcmp(s1, s2) == 0;
+
+	xmlFree(s1);
+	xmlFree(s2);
+
+	xmlFreeDoc(d1);
+	xmlFreeDoc(d2);
+
+	return same;
+}
+
+/* Check for duplicate annotations. */
+static int check_duplicate_applic(xmlDocPtr doc, const char *path, struct appcheckopts *opts, xmlNodePtr report)
+{
+	xmlXPathContextPtr ctx;
+	xmlXPathObjectPtr obj;
+	int err = 0;
+
+	add_unique_applic_strings(doc);
+
+	ctx = xmlXPathNewContext(doc);
+	xmlXPathRegisterNs(ctx, BAD_CAST "s1kd-appcheck", S1KD_APPCHECK_NS);
+	obj = xmlXPathEval(BAD_CAST "//applic/s1kd-appcheck:annotation", ctx);
+
+	if (!xmlXPathNodeSetIsEmpty(obj->nodesetval)) {
+		int i;
+
+		for (i = 0; i < obj->nodesetval->nodeNr; ++i) {
+			int j;
+
+			for (j = i + 1; j < obj->nodesetval->nodeNr; ++j) {
+				if (same_annotation(obj->nodesetval->nodeTab[i], obj->nodesetval->nodeTab[j])) {
+					add_duplicate_error(report, obj->nodesetval->nodeTab[i]->parent, obj->nodesetval->nodeTab[j]->parent, path);
+					err = 1;
+				}
+			}
+		}
+	}
+
+	xmlXPathFreeObject(obj);
+	xmlXPathFreeContext(ctx);
+
+	rem_unique_applic_strings(doc);
+
+	return err;
+}
+
 static int custom_check(xmlDocPtr doc, const char *path, struct appcheckopts *opts, xmlNodePtr report)
 {
 	xmlDocPtr act = NULL;
@@ -1150,8 +1364,12 @@ static int custom_check(xmlDocPtr doc, const char *path, struct appcheckopts *op
 		}
 	}
 
-	if (opts->check_nested) {
-		err += check_nested_applics(doc, path, report);
+	if (opts->check_duplicate) {
+		err += check_duplicate_applic(doc, path, opts, report);
+	}
+
+	if (opts->check_nested || opts->check_redundant) {
+		err += check_nested_applics(doc, path, opts, report);
 	}
 
 	xmlFreeDoc(cct);
@@ -1205,7 +1423,7 @@ static int check_prods(xmlDocPtr doc, const char *path, xmlDocPtr all, xmlDocPtr
 				id = xmlGetProp(obj->nodesetval->nodeTab[i], BAD_CAST "id");
 
 				if (id) {
-					xmlSetProp(asserts, BAD_CAST "id", id);
+					xmlSetProp(asserts, BAD_CAST "product", id);
 				}
 
 				xmlStrPrintf(line_s, 16, "%ld", xmlGetLineNo(obj->nodesetval->nodeTab[i]));
@@ -1346,8 +1564,12 @@ static int check_object_props(xmlDocPtr doc, const char *path, struct appcheckop
 		xmlFreeDoc(act);
 	}
 
-	if (opts->check_nested) {
-		err += check_nested_applics(doc, path, report);
+	if (opts->check_duplicate) {
+		err += check_duplicate_applic(doc, path, opts, report);
+	}
+
+	if (opts->check_nested || opts->check_redundant) {
+		err += check_nested_applics(doc, path, opts, report);
 	}
 
 	ctx = xmlXPathNewContext(doc);
@@ -1437,8 +1659,12 @@ static int check_all_props(xmlDocPtr doc, const char *path, xmlDocPtr act, struc
 		err += check_props_against_cts(doc, path, act, cct, report);
 	}
 
-	if (opts->check_nested) {
-		err += check_nested_applics(doc, path, report);
+	if (opts->check_duplicate) {
+		err += check_duplicate_applic(doc, path, opts, report);
+	}
+
+	if (opts->check_nested || opts->check_redundant) {
+		err += check_nested_applics(doc, path, opts, report);
 	}
 
 	ctx = xmlXPathNewContext(act);
@@ -1552,7 +1778,7 @@ static int check_pct_instances(xmlDocPtr doc, const char *path, xmlDocPtr act, s
 
 			if (find_act_fname(actfname, opts->useract, doc)) {
 				if ((act = read_xml_doc(actfname))) {
-					add_object_node(report, "act", cctfname);
+					add_object_node(report, "act", actfname);
 				}
 			}
 
@@ -1576,8 +1802,12 @@ static int check_pct_instances(xmlDocPtr doc, const char *path, xmlDocPtr act, s
 		}
 	}
 
-	if (opts->check_nested) {
-		err += check_nested_applics(doc, path, report);
+	if (opts->check_duplicate) {
+		err += check_duplicate_applic(doc, path, opts, report);
+	}
+
+	if (opts->check_nested || opts->check_redundant) {
+		err += check_nested_applics(doc, path, opts, report);
 	}
 
 	err += check_prods(doc, path, NULL, act, opts, report);
@@ -1648,6 +1878,18 @@ static int check_applic_file(const char *path, struct appcheckopts *opts, xmlNod
 		xmlSetProp(report, BAD_CAST "checkNestedApplic", BAD_CAST "yes");
 	} else {
 		xmlSetProp(report, BAD_CAST "checkNestedApplic", BAD_CAST "no");
+	}
+
+	if (opts->check_redundant) {
+		xmlSetProp(report, BAD_CAST "checkRedundantApplic", BAD_CAST "yes");
+	} else {
+		xmlSetProp(report, BAD_CAST "checkRedundantApplic", BAD_CAST "no");
+	}
+
+	if (opts->check_duplicate) {
+		xmlSetProp(report, BAD_CAST "checkDuplicateApplic", BAD_CAST "yes");
+	} else {
+		xmlSetProp(report, BAD_CAST "checkDuplicateApplic", BAD_CAST "no");
 	}
 
 	if (opts->mode == CUSTOM) {
@@ -1770,7 +2012,7 @@ int main(int argc, char **argv)
 {
 	int i;
 
-	const char *sopts = "A:abC:cd:e:FfNnK:k:loP:pqrsTtvx~h?";
+	const char *sopts = "A:abC:cDd:e:FfNnK:k:loP:pqRrsTtvx~h?";
 	struct option lopts[] = {
 		{"version"        , no_argument      , 0, 0},
 		{"help"           , no_argument      , 0, 'h'},
@@ -1779,6 +2021,7 @@ int main(int argc, char **argv)
 		{"brexcheck"      , no_argument      , 0, 'b'},
 		{"cct"            , required_argument, 0, 'C'},
 		{"custom"         , no_argument      , 0, 'c'},
+		{"duplicate"      , no_argument      , 0, 'D'},
 		{"dir"            , required_argument, 0, 'd'},
 		{"exec"           , required_argument, 0, 'e'},
 		{"valid-filenames", no_argument      , 0, 'F'},
@@ -1792,6 +2035,7 @@ int main(int argc, char **argv)
 		{"pct"            , required_argument, 0, 'P'},
 		{"progress"       , required_argument, 0, 'p'},
 		{"quiet"          , no_argument      , 0, 'q'},
+		{"redundant"      , no_argument      , 0, 'R'},
 		{"recursive"      , no_argument      , 0, 'r'},
 		{"strict"         , no_argument      , 0, 's'},
 		{"summary"        , no_argument      , 0, 'T'},
@@ -1811,26 +2055,30 @@ int main(int argc, char **argv)
 	bool show_progress = false;
 
 	struct appcheckopts opts = {
-		/* useract */      NULL,
-		/* usercct */      NULL,
-		/* userpct */      NULL,
-		/* args */         NULL,
-		/* filter */       NULL,
-		/* validators */   NULL,
-		/* output_tree */  false,
-		/* filenames */    SHOW_NONE,
-		/* brexcheck */    false,
-		/* add_deps */     false,
-		/* check_props */  false,
-		/* check_nested */ false,
-		/* rem_delete */   false,
-		/* mode */         STANDALONE
+		/* useract */         NULL,
+		/* usercct */         NULL,
+		/* userpct */         NULL,
+		/* args */            NULL,
+		/* filter */          NULL,
+		/* validators */      NULL,
+		/* output_tree */     false,
+		/* filenames */       SHOW_NONE,
+		/* brexcheck */       false,
+		/* add_deps */        false,
+		/* check_props */     false,
+		/* check_nested */    false,
+		/* check_redundant */ false,
+		/* check_duplicate */ false,
+		/* rem_delete */      false,
+		/* mode */            STANDALONE
 	};
 
 	int err = 0;
 
 	xmlDocPtr report;
 	xmlNodePtr appcheck;
+
+	exsltRegisterAll();
 
 	objects = malloc(OBJECT_MAX * PATH_MAX);
 
@@ -1847,7 +2095,7 @@ int main(int argc, char **argv)
 					show_version();
 					goto cleanup;
 				}
-				LIBXML2_PARSE_LONGOPT_HANDLE(lopts, loptind)
+				LIBXML2_PARSE_LONGOPT_HANDLE(lopts, loptind, optarg)
 				break;
 			case 'A':
 				opts.useract = strdup(optarg);
@@ -1863,6 +2111,9 @@ int main(int argc, char **argv)
 				break;
 			case 'c':
 				opts.mode = CUSTOM;
+				break;
+			case 'D':
+				opts.check_duplicate = true;
 				break;
 			case 'd':
 				free(search_dir);
@@ -1903,6 +2154,9 @@ int main(int argc, char **argv)
 				break;
 			case 'p':
 				show_progress = true;
+				break;
+			case 'R':
+				opts.check_redundant = true;
 				break;
 			case 'r':
 				recursive_search = true;

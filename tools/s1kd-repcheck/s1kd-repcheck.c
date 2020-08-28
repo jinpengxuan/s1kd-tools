@@ -13,7 +13,7 @@
 
 /* Program information. */
 #define PROG_NAME "s1kd-repcheck"
-#define VERSION "1.5.0"
+#define VERSION "1.9.0"
 
 /* Message prefixes. */
 #define ERR_PREFIX PROG_NAME ": ERROR: "
@@ -49,6 +49,9 @@
 /* Exit status codes. */
 #define EXIT_MAX_OBJECTS 2
 
+/* Namespace for special attributes used to extract CIR references. */
+#define S1KD_REPCHECK_NS BAD_CAST "urn:s1kd-tools:s1kd-repcheck"
+
 /* Verbosity of messages. */
 enum verbosity { QUIET, NORMAL, VERBOSE, DEBUG };
 
@@ -71,8 +74,9 @@ struct opts {
 	bool search_all_objs;
 	bool output_valid;
 	bool list_refs;
-	bool all_refs;
 	bool rem_delete;
+	xmlDocPtr cir_refs_xsl;
+	char *type;
 	struct objects objects;
 	struct objects cirs;
 	xmlNodePtr report;
@@ -123,7 +127,7 @@ static xmlNodePtr find_ref_in_cir(xmlNodePtr ref, const xmlChar *ident, const xm
 }
 
 /* Add a reference to the XML report. */
-static void add_ref_to_report(xmlNodePtr rpt, xmlNodePtr ref, const xmlChar *ident, long int lineno, const char *cir, struct opts *opts)
+static void add_ref_to_report(xmlNodePtr rpt, xmlNodePtr ref, const xmlChar *type, const xmlChar *ident, long int lineno, const char *cir, struct opts *opts)
 {
 	xmlNodePtr node;
 	xmlChar line_s[16], *xpath;
@@ -135,6 +139,7 @@ static void add_ref_to_report(xmlNodePtr rpt, xmlNodePtr ref, const xmlChar *ide
 
 	node = xmlNewChild(rpt, NULL, BAD_CAST "ref", NULL);
 
+	xmlSetProp(node, BAD_CAST "type", type);
 	xmlSetProp(node, BAD_CAST "name", ident);
 
 	xmlStrPrintf(line_s, 16, "%ld", lineno);
@@ -276,21 +281,65 @@ static bool find_dmod_fname(char *dst, xmlNodePtr dmRefIdent, struct opts *opts)
 	return false;
 }
 
+/* Remove namespace declaration added by tool. */
+static void remove_repcheck_ns(xmlNodePtr node)
+{
+	xmlNsPtr cur, prev;
+
+	cur  = node->nsDef;
+	prev = NULL;
+
+	while (cur) {
+		xmlNsPtr next;
+
+		next = cur->next;
+
+		if (xmlStrcmp(cur->href, S1KD_REPCHECK_NS) == 0) {
+			if (prev == NULL) {
+				node->nsDef = next;
+			} else {
+				prev->next = next;
+			}
+
+			xmlFreeNode((xmlNodePtr) cur);
+		} else {
+			prev = cur;
+		}
+
+		cur = next;
+	}
+}
+
+/* Remove attributes added by tool. */
+static void remove_repcheck_attrs(xmlNodePtr ref, xmlNsPtr ns)
+{
+	xmlUnsetNsProp(ref, ns, BAD_CAST "type");
+	xmlUnsetNsProp(ref, ns, BAD_CAST "name");
+	xmlUnsetNsProp(ref, ns, BAD_CAST "test");
+	remove_repcheck_ns(ref);
+}
+
 /* Check a specific CIR reference. */
 static int check_cir_ref(xmlNodePtr ref, const char *path, xmlNodePtr rpt, struct opts *opts)
 {
 	int i, err = 0;
-	xmlChar *ident, *xpath;
+	xmlAttrPtr type_attr, ident_attr, xpath_attr;
+	xmlChar *type, *ident, *xpath;
 	long int lineno;
 	xmlXPathContextPtr ctx;
 	xmlXPathObjectPtr obj;
 
 	lineno = xmlGetLineNo(ref);
 
-	ident = xmlGetProp(ref, BAD_CAST "repcheck_name");
-	xpath = xmlGetProp(ref, BAD_CAST "repcheck_test");
-	xmlUnsetProp(ref, BAD_CAST "repcheck_name");
-	xmlUnsetProp(ref, BAD_CAST "repcheck_test");
+	type_attr  = xmlHasNsProp(ref, BAD_CAST "type", S1KD_REPCHECK_NS);
+	ident_attr = xmlHasNsProp(ref, BAD_CAST "name", S1KD_REPCHECK_NS);
+	xpath_attr = xmlHasNsProp(ref, BAD_CAST "test", S1KD_REPCHECK_NS);
+
+	type  = xmlNodeGetContent((xmlNodePtr) type_attr);
+	ident = xmlNodeGetContent((xmlNodePtr) ident_attr);
+	xpath = xmlNodeGetContent((xmlNodePtr) xpath_attr);
+
+	remove_repcheck_attrs(ref, ident_attr->ns);
 
 	/* Check if there is an explicit CIR reference. */
 	ctx = xmlXPathNewContext(ref->doc);
@@ -302,7 +351,7 @@ static int check_cir_ref(xmlNodePtr ref, const char *path, xmlNodePtr rpt, struc
 		/* Search in all CIRs. */
 		for (i = 0; i < opts->cirs.count; ++i) {
 			if (find_ref_in_cir(ref, ident, xpath, opts->cirs.paths[i], opts)) {
-				add_ref_to_report(rpt, ref, ident, lineno, opts->cirs.paths[i], opts);
+				add_ref_to_report(rpt, ref, type, ident, lineno, opts->cirs.paths[i], opts);
 				goto done;
 			}
 		}
@@ -311,7 +360,7 @@ static int check_cir_ref(xmlNodePtr ref, const char *path, xmlNodePtr rpt, struc
 		if (opts->search_all_objs) {
 			for (i = 0; i < opts->objects.count; ++i) {
 				if (find_ref_in_cir(ref, ident, xpath, opts->objects.paths[i], opts)) {
-					add_ref_to_report(rpt, ref, ident, lineno, opts->objects.paths[i], opts);
+					add_ref_to_report(rpt, ref, type, ident, lineno, opts->objects.paths[i], opts);
 					goto done;
 				}
 			}
@@ -323,7 +372,7 @@ static int check_cir_ref(xmlNodePtr ref, const char *path, xmlNodePtr rpt, struc
 
 			if (find_dmod_fname(fname, obj->nodesetval->nodeTab[i], opts)) {
 				if (find_ref_in_cir(ref, ident, xpath, fname, opts)) {
-					add_ref_to_report(rpt, ref, ident, lineno, fname, opts);
+					add_ref_to_report(rpt, ref, type, ident, lineno, fname, opts);
 					goto done;
 				}
 			}
@@ -333,12 +382,13 @@ static int check_cir_ref(xmlNodePtr ref, const char *path, xmlNodePtr rpt, struc
 	if (opts->verbosity >= NORMAL) {
 		fprintf(stderr, E_NOT_FOUND, path, lineno, ident);
 	}
-	add_ref_to_report(rpt, ref, ident, lineno, NULL, opts);
+	add_ref_to_report(rpt, ref, type, ident, lineno, NULL, opts);
 	err = 1;
 
 done:
 	xmlXPathFreeObject(obj);
 	xmlXPathFreeContext(ctx);
+	xmlFree(type);
 	xmlFree(ident);
 	xmlFree(xpath);
 
@@ -348,24 +398,27 @@ done:
 /* List a CIR reference without validating it. */
 static void list_cir_ref(const xmlNodePtr ref, const char *path, xmlNodePtr rpt, struct opts *opts)
 {
-	xmlChar *ident;
+	xmlAttrPtr type_attr, ident_attr;
+	xmlChar *type, *ident;
 	long int lineno;
 
 	lineno = xmlGetLineNo(ref);
 
-	ident = xmlGetProp(ref, BAD_CAST "repcheck_name");
-	xmlUnsetProp(ref, BAD_CAST "repcheck_name");
-	xmlUnsetProp(ref, BAD_CAST "repcheck_test");
+	type_attr  = xmlHasNsProp(ref, BAD_CAST "type", S1KD_REPCHECK_NS);
+	ident_attr = xmlHasNsProp(ref, BAD_CAST "name", S1KD_REPCHECK_NS);
 
-	xmlUnsetProp(ref, BAD_CAST "repcheck_name");
-	xmlUnsetProp(ref, BAD_CAST "repcheck_test");
+	type  = xmlNodeGetContent((xmlNodePtr) type_attr);
+	ident = xmlNodeGetContent((xmlNodePtr) ident_attr);
+
+	remove_repcheck_attrs(ref, ident_attr->ns);
 
 	if (rpt) {
-		add_ref_to_report(rpt, ref, ident, lineno, NULL, opts);
+		add_ref_to_report(rpt, ref, type, ident, lineno, NULL, opts);
 	} else {
 		printf("%s:%ld:%s\n", path, lineno, (char *) ident);
 	}
 
+	xmlFree(type);
 	xmlFree(ident);
 }
 
@@ -378,7 +431,6 @@ static int check_cir_refs(xmlDocPtr doc, const char *path, struct opts *opts)
 	xmlNodePtr rpt;
 	xmlXPathContextPtr ctx;
 	xmlXPathObjectPtr obj;
-	const char *params[3];
 
 	/* Add object to report. */
 	if (opts->report) {
@@ -388,17 +440,19 @@ static int check_cir_refs(xmlDocPtr doc, const char *path, struct opts *opts)
 		rpt = NULL;
 	}
 
-	styledoc = read_xml_mem((const char *) xsl_cirrefs_xsl, xsl_cirrefs_xsl_len);
+	styledoc = xmlCopyDoc(opts->cir_refs_xsl, 1);
 	style = xsltParseStylesheetDoc(styledoc);
 
-	params[0] = "all-refs";
-	params[1] = opts->all_refs ? "true()" : "false()";
-	params[2] = NULL;
-
-	res = xsltApplyStylesheet(style, doc, params);
+	res = xsltApplyStylesheet(style, doc, NULL);
 
 	ctx = xmlXPathNewContext(res);
-	obj = xmlXPathEvalExpression(BAD_CAST "//*[@repcheck_test]", ctx);
+	xmlXPathRegisterNs(ctx, BAD_CAST "s1kd-repcheck", S1KD_REPCHECK_NS);
+	if (opts->type) {
+		xmlXPathRegisterVariable(ctx, BAD_CAST "type", xmlXPathNewString(BAD_CAST opts->type));
+		obj = xmlXPathEval(BAD_CAST "//*[@s1kd-repcheck:test and @s1kd-repcheck:type=$type]", ctx);
+	} else {
+		obj = xmlXPathEval(BAD_CAST "//*[@s1kd-repcheck:test]", ctx);
+	}
 
 	if (!xmlXPathNodeSetIsEmpty(obj->nodesetval)) {
 		int i;
@@ -633,7 +687,9 @@ static void show_help(void)
 	puts("  -R, --cir <CIR>        Check references against the given CIR.");
 	puts("  -r, --recursive        Search for CIRs recursively.");
 	puts("  -T, --summary          Print a summary of the check.");
+	puts("  -t, --type <type>      Type of CIR references to check.");
 	puts("  -v, --verbose          Verbose output.");
+	puts("  -X, --xsl <file>       Custom XSLT for extracting CIR references.");
 	puts("  -x, --xml              Output XML report.");
 	puts("  -^, --remove-deleted   Validate with elements marked as \"delete\" removed.");
 	puts("  --version              Show version information.");
@@ -652,12 +708,13 @@ int main(int argc, char **argv)
 {
 	int i, err = 0;
 
-	const char *sopts = "Aad:FfLlNopqR:rTvx^h?";
+	const char *sopts = "AaDd:FfLlNopqR:rTt:vX:x^h?";
 	struct option lopts[] = {
 		{"version"        , no_argument      , 0, 0},
 		{"help"           , no_argument      , 0, 'h'},
 		{"all-refs"       , no_argument      , 0, 'A'},
 		{"all"            , no_argument      , 0, 'a'},
+		{"dump-xsl"       , no_argument      , 0, 'D'},
 		{"dir"            , required_argument, 0, 'd'},
 		{"valid-filenames", no_argument      , 0, 'F'},
 		{"filenames"      , no_argument      , 0, 'f'},
@@ -670,9 +727,12 @@ int main(int argc, char **argv)
 		{"cir"            , required_argument, 0, 'R'},
 		{"recursive"      , no_argument      , 0, 'r'},
 		{"summary"        , no_argument      , 0, 'T'},
+		{"type"           , required_argument, 0, 't'},
 		{"verbose"        , no_argument      , 0, 'v'},
+		{"xsl"            , required_argument, 0, 'X'},
 		{"xml"            , no_argument      , 0, 'x'},
 		{"remove-deleted" , no_argument      , 0, '^'},
+		LIBXML2_PARSE_LONGOPT_DEFS
 		{0, 0, 0, 0}
 	};
 	int loptind = 0;
@@ -683,6 +743,8 @@ int main(int argc, char **argv)
 	bool find_cir = false;
 	bool show_stats = false;
 	bool xml_report = false;
+	bool all_refs = false;
+	bool dump_xsl = false;
 
 	xmlDocPtr report_doc = NULL;
 
@@ -694,8 +756,9 @@ int main(int argc, char **argv)
 	opts.search_all_objs = false;
 	opts.output_valid = false;
 	opts.list_refs = false;
-	opts.all_refs = false;
 	opts.rem_delete = false;
+	opts.cir_refs_xsl = NULL;
+	opts.type = NULL;
 
 	init_objects(&opts.objects);
 	init_objects(&opts.cirs);
@@ -709,12 +772,16 @@ int main(int argc, char **argv)
 					show_version();
 					goto cleanup;
 				}
+				LIBXML2_PARSE_LONGOPT_HANDLE(lopts, loptind, optarg)
 				break;
 			case 'A':
-				opts.all_refs = true;
+				all_refs = true;
 				break;
 			case 'a':
 				opts.search_all_objs = true;
+				break;
+			case 'D':
+				dump_xsl = true;
 				break;
 			case 'd':
 				free(opts.search_dir);
@@ -757,8 +824,16 @@ int main(int argc, char **argv)
 			case 'T':
 				show_stats = true;
 				break;
+			case 't':
+				free(opts.type);
+				opts.type = strdup(optarg);
+				break;
 			case 'v':
 				++opts.verbosity;
+				break;
+			case 'X':
+				free(opts.cir_refs_xsl);
+				opts.cir_refs_xsl = read_xml_doc(optarg);
 				break;
 			case 'x':
 				xml_report = true;
@@ -773,6 +848,22 @@ int main(int argc, char **argv)
 		}
 	}
 
+	/* Load XSLT to extract CIR refs. */
+	if (opts.cir_refs_xsl == NULL) {
+		if (all_refs) {
+			opts.cir_refs_xsl = read_xml_mem((const char *) xsl_cirrefsall_xsl, xsl_cirrefsall_xsl_len);
+		} else {
+			opts.cir_refs_xsl = read_xml_mem((const char *) xsl_cirrefs_xsl, xsl_cirrefs_xsl_len);
+		}
+	}
+
+	/* Dump built-in XSLT if the -D option is specified. */
+	if (dump_xsl) {
+		save_xml_doc(opts.cir_refs_xsl, "-");
+		goto cleanup;
+	}
+
+	/* Initialize the XML report if the -x option is specified. */
 	if (xml_report || show_stats) {
 		report_doc = xmlNewDoc(BAD_CAST "1.0");
 		opts.report = xmlNewNode(NULL, BAD_CAST "repCheck");
@@ -781,6 +872,7 @@ int main(int argc, char **argv)
 		opts.report = NULL;
 	}
 
+	/* Search for CIRs when -R* is specified. */
 	if (find_cir) {
 		find_cirs(&opts.cirs, opts.search_dir, &opts);
 
@@ -837,6 +929,8 @@ cleanup:
 	free_objects(&opts.objects);
 	free_objects(&opts.cirs);
 	free(opts.search_dir);
+	xmlFreeDoc(opts.cir_refs_xsl);
+	free(opts.type);
 	xmlFreeDoc(report_doc);
 
 	xmlCleanupParser();

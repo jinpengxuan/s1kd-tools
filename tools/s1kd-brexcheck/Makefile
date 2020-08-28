@@ -1,44 +1,107 @@
-SOURCE=s1kd-brexcheck.c ../common/s1kd_tools.c
-OUTPUT=s1kd-brexcheck
+.PHONY: docs clean maintainer-clean install uninstall
 
-WARNING_FLAGS=-Wall -Werror -pedantic-errors
-CFLAGS=$(WARNING_FLAGS) -I ../common `pkg-config --cflags libxml-2.0 libxslt`
+COMMON=../common
 
-ifeq ($(DEBUG),1)
-	CFLAGS+=-g
+SOURCE=s1kd-brexcheck.c $(COMMON)/s1kd_tools.c
+
+ifeq ($(OS),Windows_NT)
+  OUTPUT=s1kd-brexcheck.exe
 else
-	CFLAGS+=-O3
+  OUTPUT=s1kd-brexcheck
 endif
 
-LDFLAGS=`pkg-config --libs libxml-2.0 libxslt`
+WARNING_FLAGS=-Wall -Werror -pedantic-errors
+CFLAGS=$(WARNING_FLAGS) -I $(COMMON) `pkg-config --cflags libxml-2.0 libxslt libexslt`
+
+ifeq ($(DEBUG),1)
+  CFLAGS+=-g
+else
+  CFLAGS+=-O3
+endif
+
+LDFLAGS=`pkg-config --libs libxml-2.0 libxslt libexslt`
 
 PREFIX=/usr/local
 INSTALL_PREFIX=$(PREFIX)/bin
-INSTALL=install -s
+INSTALL=install -Ds
+
+ifeq ($(BREXCHECK_XPATH_ENGINE),saxon)
+  ifeq ($(OS),Windows_NT)
+    SAXON_C_DIR=/cygdrive/c/Progra~1/Saxonica/SaxonHEC1.2.1
+  else
+    SAXON_C_DIR=/usr/lib
+  endif
+
+  SAXON_C_API=saxon/Saxon.C.API
+
+  SAXON_OBJECTS+=saxon/saxon.o
+  SAXON_OBJECTS+=saxon/SaxonCGlue.o
+  SAXON_OBJECTS+=saxon/SaxonCXPath.o
+  SAXON_OBJECTS+=saxon/SaxonProcessor.o
+  SAXON_OBJECTS+=saxon/SchemaValidator.o
+  SAXON_OBJECTS+=saxon/XdmAtomicValue.o
+  SAXON_OBJECTS+=saxon/XdmItem.o
+  SAXON_OBJECTS+=saxon/XdmNode.o
+  SAXON_OBJECTS+=saxon/XdmValue.o
+  SAXON_OBJECTS+=saxon/XPathProcessor.o
+  SAXON_OBJECTS+=saxon/XQueryProcessor.o
+  SAXON_OBJECTS+=saxon/Xslt30Processor.o
+  SAXON_OBJECTS+=saxon/XsltProcessor.o
+
+  SOURCE+=$(SAXON_OBJECTS)
+  CFLAGS+=-DUSE_SAXON
+  LDFLAGS+=-lstdc++ -L$(SAXON_C_DIR) -lsaxonhec
+
+  ifneq ($(OSTYPE),msys)
+    LDFLAGS+=-ldl
+  endif
+
+  # Treat MinGW/Cygwin as Linux when compiling Saxon/C API
+  ifeq ($(OSTYPE),msys)
+    SAXON_CFLAGS+=-D__linux__
+  endif
+  ifeq ($(OSTYPE),cygwin)
+    SAXON_CFLAGS+=-D__linux__
+  endif
+
+  ifeq ($(DEBUG),1)
+    SAXON_CFLAGS+=-g -DDEBUG
+  else
+    SAXON_CFLAGS+=-O3
+  endif
+endif
 
 all: $(OUTPUT)
 
 $(OUTPUT): $(SOURCE) brex.h
 	$(CC) $(CFLAGS) -o $(OUTPUT) $(SOURCE) $(LDFLAGS)
 
-brex.h: brex/DMC-*.XML stats.xsl
-	> brex.h
-	for f in brex/DMC-*.XML; do xxd -i "$$f" >> brex.h; done
-	xxd -i stats.xsl >> brex.h
+saxon/%.o: $(SAXON_C_API)/%.cpp
+	$(CXX) $(SAXON_CFLAGS) -c -o $@ $+
 
-.PHONY: docs clean maintainer-clean install uninstall
+saxon/SaxonC%.o: $(SAXON_C_API)/SaxonC%.c
+	$(CC) $(SAXON_CFLAGS) -c -o $@ $+
+
+saxon/saxon.o: saxon/saxon.cpp
+	$(CXX) $(SAXON_CFLAGS) -c -I$(SAXON_C_API) -o $@ `pkg-config --cflags libxml-2.0` $+
+
+brex.h: brex/DMC-*.XML stats.xsl
+	> $@ && for f in $+; do xxd -i "$$f" >> $@; done
 
 docs:
 	$(MAKE) -C doc
 
 clean:
+ifeq ($(BREXCHECK_XPATH_ENGINE),saxon)
+	rm -f $(SAXON_OBJECTS)
+endif
 	rm -f $(OUTPUT) brex.h
 
 maintainer-clean: clean
 	$(MAKE) -C doc clean
 
 install: $(OUTPUT)
-	$(INSTALL) $(OUTPUT) $(INSTALL_PREFIX)
+	$(INSTALL) $(OUTPUT) $(INSTALL_PREFIX)/$(OUTPUT)
 	$(MAKE) -C doc install
 
 uninstall:

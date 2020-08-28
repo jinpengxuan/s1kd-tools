@@ -118,8 +118,8 @@ removed.
 --version  
 Show version information.
 
-In addition, the following options enable features of the XML parser
-that are disabled as a precaution by default:
+In addition, the following options allow configuration of the XML
+parser:
 
 --dtdload  
 Load the external DTD.
@@ -141,6 +141,10 @@ Emit warnings from parser.
 
 --xinclude  
 Do XInclude processing.
+
+--xml-catalog &lt;file&gt;  
+Use an XML catalog when resolving entities. Multiple catalogs may be
+loaded by specifying this option multiple times.
 
 Business rule severity levels (`.brseveritylevels`)
 ---------------------------------------------------
@@ -265,6 +269,32 @@ The s1kd-brexcheck tool supports all three types. If the `valueForm`
 attribute is omitted, it will assume the value is in the `"single"`
 notation.
 
+XPath support
+-------------
+
+Supported XPath syntax depends on what XPath engine was selected at
+compile-time:
+
+libxml2 (default)  
+-   XPath 1.0
+
+-   Partial support for EXSLT functions
+
+Saxon (experimental)  
+-   XPath 1.0
+
+-   XPath 2.0
+
+-   XPath 3.0
+
+Information on which XPath engine is in use can be obtained from the
+--version option.
+
+If the XPath given for the `<objectPath>` of a rule is invalid, the rule
+will be ignored when validating objects. A warning will be printed to
+stderr, and the XML report will contain an `<xpathError>` element for
+each error.
+
 EXIT STATUS
 ===========
 
@@ -279,9 +309,6 @@ One or more CSDB objects specified could not be read.
 
 3  
 A referenced BREX data module could not be found.
-
-4  
-An XPath expression given for a BREX rule was invalid.
 
 5  
 The number of paths or CSDB objects specified exceeded the available

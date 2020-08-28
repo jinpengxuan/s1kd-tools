@@ -55,6 +55,9 @@ CCT respectively, and/or the -n option, to only check nested
 applicability annotations. If neither of these options are specified, no
 checks will be performed.
 
+-D, --duplicate  
+Check for duplicate annotations.
+
 -d, --dir &lt;dir&gt;  
 The directory to start searching for ACT/CCT/PCT data modules in. By
 default, the current directory is used.
@@ -111,6 +114,9 @@ Display a progress bar.
 -q, --quiet  
 Quiet mode. Error messages will not be printed.
 
+-R, --redundant  
+Check for redundant annotations.
+
 -r, --recursive  
 Search for the ACT/CCT/PCT recursively.
 
@@ -145,8 +151,8 @@ Show version information.
 &lt;object&gt;...  
 Object(s) to validate.
 
-In addition, the following options enable features of the XML parser
-that are disabled as a precaution by default:
+In addition, the following options allow configuration of the XML
+parser:
 
 --dtdload  
 Load the external DTD.
@@ -168,6 +174,10 @@ Emit warnings from parser.
 
 --xinclude  
 Do XInclude processing.
+
+--xml-catalog &lt;file&gt;  
+Use an XML catalog when resolving entities. Multiple catalogs may be
+loaded by specifying this option multiple times.
 
 EXIT STATUS
 ===========
@@ -427,3 +437,53 @@ object:
     s1kd-appcheck: ERROR: <DM>: proceduralStep on line 62 is applicable
     when prodattr version = C, which is not a subset of the applicability
     of the whole object.
+
+Redundant applicability annotations
+-----------------------------------
+
+Consider the following data module snippet:
+
+    <proceduralStep applicRefId="app-A">
+    <para>Step A</para>
+    <figure applicRefId="app-A">
+    ...
+    </figure>
+    </proceduralStep>
+
+This is technically correct, but the annotation on the figure can be
+considered redundant, since it has the same applicability as its
+ancestor, and the applicability of an element is already inherited by
+all its descendants automatically.
+
+The -R (--redundant) option will report when the applicability of a
+nested element is redundant:
+
+    $ s1kd-appcheck -R <DM>
+    s1kd-appcheck: ERROR: <DM>: figure on line 85 has the same
+    applicability as its parent proceduralStep on line 83 (app-A)
+
+> **Note**
+>
+> Currently, this check only detects when the exact same annotation
+> (with the same ID) is nested within itself. In the future, this should
+> also detect redundant logic between different nested annotations.
+
+Duplicate applicability annotations
+-----------------------------------
+
+Consider the following data module snippet:
+
+    <referencedApplicGroup>
+    <applic id="app-0001">
+    <assert applicPropertyIdent="version" applicPropertyType="prodattr" applicPropertyValues="A"/>
+    </applic>
+    <applic id="app-0002">
+    <assert applicPropertyIdent="version" applicPropertyType="prodattr" applicPropertyValues="A"/>
+    </referencedApplicGroup>
+
+These annotations have duplicate logic, meaning only one is necessary.
+The -D (--duplicate) option will report when an applicability annotation
+is a duplicate of another annotation:
+
+    $ s1kd-appcheck -D <DM>
+    s1kd-appcheck: ERROR: <DM>: Annotation on line 47 is a duplicate of annotation on line 24.

@@ -11,7 +11,7 @@
 #include "resources.h"
 
 #define PROG_NAME "s1kd-aspp"
-#define VERSION "4.4.0"
+#define VERSION "5.0.0"
 
 #define ERR_PREFIX PROG_NAME ": ERROR: "
 #define WRN_PREFIX PROG_NAME ": WARNING: "
@@ -238,27 +238,6 @@ static void dumpGenDispTextXsl(void)
 static void dumpDispText(void)
 {
 	printf("%.*s", disptext_xml_len, disptext_xml);
-}
-
-static void addIdentity(xmlDocPtr style)
-{
-	xmlDocPtr identity;
-	xmlNodePtr stylesheet, first, template;
-
-	identity = read_xml_mem((const char *) ___common_identity_xsl, ___common_identity_xsl_len);
-	template = xmlFirstElementChild(xmlDocGetRootElement(identity));
-
-	stylesheet = xmlDocGetRootElement(style);
-
-	first = xmlFirstElementChild(stylesheet);
-
-	if (first) {
-		xmlAddPrevSibling(first, xmlCopyNode(template, 1));
-	} else {
-		xmlAddChild(stylesheet, xmlCopyNode(template, 1));
-	}
-
-	xmlFreeDoc(identity);
 }
 
 /* Customize the display text based on a format string. */
@@ -809,7 +788,7 @@ int main(int argc, char **argv)
 					show_version();
 					return 0;
 				}
-				LIBXML2_PARSE_LONGOPT_HANDLE(lopts, loptind)
+				LIBXML2_PARSE_LONGOPT_HANDLE(lopts, loptind, optarg)
 				break;
 			case '.':
 				dumpDispText();
@@ -908,7 +887,6 @@ int main(int argc, char **argv)
 		styledoc = read_xml_doc(customGenDispTextFile);
 	}
 
-	addIdentity(styledoc);
 	if (format) {
 		apply_format_str(styledoc, format);
 	}

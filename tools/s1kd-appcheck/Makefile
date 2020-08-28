@@ -1,33 +1,37 @@
+.PHONY: docs clean maintainer-clean install uninstall
+
 COMMON=../common
 
 SOURCE=s1kd-appcheck.c $(COMMON)/s1kd_tools.c
-OUTPUT=s1kd-appcheck
 
-WARNING_FLAGS=-Wall -Werror -pedantic-errors
-CFLAGS=$(WARNING_FLAGS) -I $(COMMON) `pkg-config --cflags libxml-2.0 libxslt`
-
-ifeq ($(DEBUG),1)
-	CFLAGS+=-g
+ifeq ($(OS),Windows_NT)
+  OUTPUT=s1kd-appcheck.exe
 else
-	CFLAGS+=-O3
+  OUTPUT=s1kd-appcheck
 endif
 
-LDFLAGS=`pkg-config --libs libxml-2.0 libxslt`
+WARNING_FLAGS=-Wall -Werror -pedantic-errors
+CFLAGS=$(WARNING_FLAGS) -I $(COMMON) `pkg-config --cflags libxml-2.0 libxslt libexslt`
+
+ifeq ($(DEBUG),1)
+  CFLAGS+=-g
+else
+  CFLAGS+=-O3
+endif
+
+LDFLAGS=`pkg-config --libs libxml-2.0 libxslt libexslt`
 
 PREFIX=/usr/local
 INSTALL_PREFIX=$(PREFIX)/bin
-INSTALL=install -s
+INSTALL=install -Ds
 
 all: $(OUTPUT)
 
 $(OUTPUT): $(SOURCE) stylesheets.h
 	$(CC) $(CFLAGS) -o $(OUTPUT) $(SOURCE) $(LDFLAGS)
 
-stylesheets.h: combos.xsl stats.xsl
-	> $@
-	for f in $+; do xxd -i $$f >> $@; done
-
-.PHONY: docs clean maintainer-clean install uninstall
+stylesheets.h: combos.xsl stats.xsl duplicate.xsl clean-duplicate.xsl
+	> $@ && for f in $+; do xxd -i $$f >> $@; done
 
 docs:
 	$(MAKE) -C doc
@@ -39,7 +43,7 @@ maintainer-clean: clean
 	$(MAKE) -C doc clean
 
 install: $(OUTPUT)
-	$(INSTALL) $(OUTPUT) $(INSTALL_PREFIX)
+	$(INSTALL) $(OUTPUT) $(INSTALL_PREFIX)/$(OUTPUT)
 	$(MAKE) -C doc install
 
 uninstall:

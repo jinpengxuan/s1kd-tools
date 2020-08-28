@@ -139,14 +139,19 @@ to identify that the instance was produced by this tool. A different
 code and name can be specified with the -G option.
 
 -H, --list-properties &lt;method&gt;  
-Create an XML report of all the applicability properties used in the
-specified CSDB objects. &lt;method&gt; determines how to include values
-in the report:
+Create an XML report of all the applicability properties used in, and
+product instances relevant to, the specified CSDB objects.
+&lt;method&gt; determines how to include values and products in the
+report:
 
 -   "standalone" - Only include the values that are explicitly used in
     the object.
 
--   "all" - Include all values as defined in the ACT and CCT.
+-   "all" - Include all values and products as defined in the ACT, CCT
+    and PCT.
+
+-   "applic" - Only include the values and products, as defined in the
+    ACT, CCT and PCT, that are within the applicability of the object.
 
 -h, -?, --help  
 Show help/usage message.
@@ -313,9 +318,8 @@ PCT explicitly (-P), when searching for source objects (-@), or when
 searching for CIR data modules (-R).
 
 -S, --no-source-ident  
-Do not include
-&lt;sourceDmIdent&gt;/&lt;sourcePmIdent&gt;/&lt;repositorySourceDmIdent&gt;
-in the instance.
+Do not include &lt;sourceDmIdent&gt;/&lt;sourcePmIdent&gt; in the
+instance.
 
 -s, --assign &lt;applic&gt;  
 An applicability definition in the form of "`<ident>:<type>=<value>`".
@@ -389,6 +393,10 @@ Specify the ACT to use to find the CCT and/or PCT.
 -2, --cct  
 Specify the CCT to read dependency tests from (-\~).
 
+-3, --no-repository-ident  
+Do not include a &lt;repositorySourceDmIdent&gt; in the instance for
+each CIR.
+
 -4, --flatten-alts-refs  
 Same as the -F option, but in addition to flattening alts elements, the
 `internalRefTargetType` of cross-references to them will be changed to
@@ -447,8 +455,8 @@ Show version information.
 &lt;object&gt;...  
 Source CSDB objects to instantiate.
 
-In addition, the following options enable features of the XML parser
-that are disabled as a precaution by default:
+In addition, the following options allow configuration of the XML
+parser:
 
 --dtdload  
 Load the external DTD.
@@ -471,22 +479,29 @@ Emit warnings from parser.
 --xinclude  
 Do XInclude processing.
 
+--xml-catalog &lt;file&gt;  
+Use an XML catalog when resolving entities. Multiple catalogs may be
+loaded by specifying this option multiple times.
+
 Identifying the source of an instance
 -------------------------------------
 
-The resulting data module instances will contain the element
-`<sourceDmIdent>`, which will contain the identification elements of the
-source data modules used to instantiate them. Publication module
-instances will contain the element `<sourcePmIdent>` instead.
+If the identification information (extension, code, issue or language)
+of an instance differs from that of the source, the resulting data
+module instance will contain the element `<sourceDmIdent>`, which will
+contain the identification elements of the source data module used to
+instantiate it. Publication module instances will contain the element
+`<sourcePmIdent>` instead.
 
 Additionally, the data module instance will contain an element
 `<repositorySourceDmIdent>` for each CIR specified with the -R option.
 
-If the -S option is used, neither the
-`<sourceDmIdent>`/`<sourcePmIdent>` elements or
-`<repositorySourceDmIdent>` elements are added. This can be useful when
-this tool is not used to make an "instance" per se, but more generally
-to make a module based on an existing module.
+If the -S (--no-source-ident) option is used, neither the
+`<sourceDmIdent>` or `<sourcePmIdent>` elements are added. If the -3
+(--no-repository-ident) option is used, no `<repositorySourceDmIdent>`
+elements will be added. These options can be useful when this tool is
+not used to make an "instance" per se, but more generally to make a
+module based on an existing module.
 
 Removing/simplifying/pruning applicability annotations
 ------------------------------------------------------
@@ -937,18 +952,6 @@ contains two `dmodule` elements. The first is the source data module,
 and the second is the CIR data module specified with the corresponding
 -R option. The CIR data module is first filtered on the defined
 applicability.
-
-An "identity" template is automatically inserted in to the custom XSLT
-script, equivalent to the following:
-
-    <xsl:template match="@*|node()">
-    <xsl:copy>
-    <xsl:apply-templates select="@*|node()"/>
-    </xsl:copy>
-    </xsl:template>
-
-This means any elements or attributes which are not matched with a more
-specific template in the custom XSLT script are automatically copied.
 
 The set of built-in XSLT scripts used to resolve dependencies can be
 dumped using the -D option.

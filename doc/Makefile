@@ -24,7 +24,7 @@ PANDOC_MAN=pandoc -f docbook -t man -s
 PREFIX=/usr/local
 MAN1_PREFIX=$(PREFIX)/share/man/man1
 MAN5_PREFIX=$(PREFIX)/share/man/man5
-INSTALL=install
+INSTALL=install -D
 
 all:
 
@@ -68,8 +68,8 @@ maintainer-clean:
 	rm -f s1kd-tools.1 s1kd-defaults.5 $(README) $(INTRO) $(DEFAULTS) $(INSTALL_DOC) $(EXAMPLE) $(COMPAT)
 
 install:
-	$(INSTALL) s1kd-tools.1 $(MAN1_PREFIX)
-	$(INSTALL) s1kd-defaults.5 $(MAN5_PREFIX)
+	$(INSTALL) s1kd-tools.1 $(MAN1_PREFIX)/s1kd-tools.1
+	$(INSTALL) s1kd-defaults.5 $(MAN5_PREFIX)/s1kd-defaults.5
 
 uninstall:
 	rm -f $(MAN1_PREFIX)/s1kd-tools.1

@@ -6,10 +6,10 @@
       <dmIdent>
         <dmCode modelIdentCode="S1KDTOOLS" systemDiffCode="A" systemCode="00" subSystemCode="0" subSubSystemCode="0" assyCode="00" disassyCode="00" disassyCodeVariant="A" infoCode="920" infoCodeVariant="A" itemLocationCode="D"/>
         <language languageIsoCode="en" countryIsoCode="CA"/>
-        <issueInfo issueNumber="005" inWork="00"/>
+        <issueInfo issueNumber="006" inWork="01"/>
       </dmIdent>
       <dmAddressItems>
-        <issueDate year="2020" month="05" day="01"/>
+        <issueDate year="2020" month="07" day="09"/>
         <dmTitle>
           <techName>s1kd-tools</techName>
           <infoName>Building, installing and uninstalling</infoName>
@@ -39,8 +39,8 @@
       <qualityAssurance>
         <unverified/>
       </qualityAssurance>
-      <reasonForUpdate updateReasonType="urt01">
-        <simplePara>Fix issue type.</simplePara>
+      <reasonForUpdate>
+        <simplePara>Upissue</simplePara>
       </reasonForUpdate>
     </dmStatus>
   </identAndStatusSection>
@@ -106,6 +106,9 @@
                 <para>xxd</para>
               </listItem>
               <listItem>
+                <para>pkg-config</para>
+              </listItem>
+              <listItem>
                 <para>
                   <externalPubRef xlink:href="http://xmlsoft.org">
                     <externalPubRefIdent>
@@ -139,6 +142,10 @@
               </listItem>
             </randomList>
           </para>
+        </levelledPara>
+        <levelledPara>
+          <title>Windows build environment</title>
+          <para>To build the executables on Windows, an environment such as MinGW or Cygwin is recommended. These provide POSIX-compatible tools, such as make, that allow the s1kd-tools to be built and installed on a Windows system in the same way as on a Linux system.</para>
         </levelledPara>
         <levelledPara>
           <title>Building and installing</title>

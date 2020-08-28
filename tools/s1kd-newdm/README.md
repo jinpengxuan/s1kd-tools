@@ -155,9 +155,12 @@ The CAGE code of the originator.
 -o, --origname &lt;orig&gt;  
 The originator enterprise name of the new data module.
 
--P, --two-sns-levels  
-When determining tech name from an SNS (-S or -M), include the previous
-level of SNS in the tech name. This means that:
+-P, --sns-levels &lt;levels&gt;  
+When determining tech name from an SNS (-S or -M), include the specified
+number of levels of SNS in the tech name, from 1 (default) to 4. Each
+level is separated by " - ".
+
+For example, if &lt;levels&gt; is 2, then:
 
 -   tech names derived from a subsystem will be formatted as "System -
     Subsystem"
@@ -168,9 +171,9 @@ level of SNS in the tech name. This means that:
 -   and tech names derived from an assembly will be formatted as
     "Subsubsystem - Assembly".
 
-If both levels have the same title, then only one will be used. The
-"`includePrevSnsTitle`" `.defaults` file key can also be set to control
-this option.
+If two levels have the same title, then only one will be used. The
+"`snsLevels`" `.defaults` file key can also be set to control this
+option.
 
 -p, --prompt  
 Prompts the user for any values left unspecified.
@@ -257,8 +260,8 @@ The issue type of the new data module.
 --version  
 Show version information.
 
-In addition, the following options enable features of the XML parser
-that are disabled as a precaution by default:
+In addition, the following options allow configuration of the XML
+parser:
 
 --dtdload  
 Load the external DTD.
@@ -280,6 +283,10 @@ Emit warnings from parser.
 
 --xinclude  
 Do XInclude processing.
+
+--xml-catalog &lt;file&gt;  
+Use an XML catalog when resolving entities. Multiple catalogs may be
+loaded by specifying this option multiple times.
 
 Prompt (-p) option
 ------------------

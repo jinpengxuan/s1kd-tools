@@ -6,16 +6,16 @@
       <dmIdent>
         <dmCode modelIdentCode="S1KDTOOLS" systemDiffCode="A" systemCode="04" subSystemCode="0" subSubSystemCode="0" assyCode="00" disassyCode="00" disassyCodeVariant="A" infoCode="040" infoCodeVariant="A" itemLocationCode="D"/>
         <language languageIsoCode="en" countryIsoCode="CA"/>
-        <issueInfo issueNumber="037" inWork="01"/>
+        <issueInfo issueNumber="038" inWork="01"/>
       </dmIdent>
       <dmAddressItems>
-        <issueDate year="2020" month="06" day="01"/>
+        <issueDate year="2020" month="07" day="07"/>
         <dmTitle>
           <techName>s1kd-brexcheck(1) | s1kd-tools</techName>
         </dmTitle>
       </dmAddressItems>
     </dmAddress>
-    <dmStatus issueType="status">
+    <dmStatus issueType="changed">
       <security securityClassification="01"/>
       <responsiblePartnerCompany>
         <enterpriseName>khzae.net</enterpriseName>
@@ -38,8 +38,11 @@
       <qualityAssurance>
         <unverified/>
       </qualityAssurance>
-      <reasonForUpdate>
-        <simplePara>Upissue</simplePara>
+      <reasonForUpdate id="rfu-xml-catalog" updateHighlight="1" updateReasonType="urt02">
+        <simplePara>Add --xml-catalog parser option.</simplePara>
+      </reasonForUpdate>
+      <reasonForUpdate id="rfu-0001" updateHighlight="1" updateReasonType="urt02">
+        <simplePara>Add experimental Saxon support.</simplePara>
       </reasonForUpdate>
     </dmStatus>
   </identAndStatusSection>
@@ -58,7 +61,10 @@
       </levelledPara>
       <levelledPara>
         <title>DESCRIPTION</title>
-        <para>The <emphasis>s1kd-brexcheck</emphasis> tool validates S1000D CSDB objects using the context, SNS, and/or notation rules of one or multiple <acronym acronymType="at01"><acronymTerm>BREX</acronymTerm><acronymDefinition>Business Rules EXchange</acronymDefinition></acronym> data modules. All errors are displayed with the &lt;objectUse&gt; message, the line number, and a representation of the invalid XML tree.</para>
+        <para>The <emphasis>s1kd-brexcheck</emphasis> tool validates S1000D CSDB objects using the context, SNS, and/or notation rules of one or multiple <acronym acronymType="at01">
+            <acronymTerm>BREX</acronymTerm>
+            <acronymDefinition>Business Rules EXchange</acronymDefinition>
+          </acronym> data modules. All errors are displayed with the &lt;objectUse&gt; message, the line number, and a representation of the invalid XML tree.</para>
       </levelledPara>
       <levelledPara>
         <title>OPTIONS</title>
@@ -164,7 +170,10 @@
             <definitionListItem>
               <listItemTerm>-S[tu], --sns [--strict|--unstrict]</listItemTerm>
               <listItemDefinition>
-                <para>Check <acronym acronymType="at01"><acronymTerm>SNS</acronymTerm><acronymDefinition>Standard Numbering System</acronymDefinition></acronym> rules. The SNS of each specified data module is checked against the combination of all SNS rules of all specified BREX data modules.</para>
+                <para>Check <acronym acronymType="at01">
+                    <acronymTerm>SNS</acronymTerm>
+                    <acronymDefinition>Standard Numbering System</acronymDefinition>
+                  </acronym> rules. The SNS of each specified data module is checked against the combination of all SNS rules of all specified BREX data modules.</para>
               </listItemDefinition>
             </definitionListItem>
             <definitionListItem>
@@ -211,8 +220,8 @@
             </definitionListItem>
           </definitionList>
         </para>
-        <para>In addition, the following options enable features of the XML parser that are disabled as a precaution by default:</para>
         <para>
+          In addition, the following options allow configuration of the XML parser:
           <definitionList>
             <definitionListItem>
               <listItemTerm>--dtdload</listItemTerm>
@@ -256,8 +265,14 @@
                 <para>Do XInclude processing.</para>
               </listItemDefinition>
             </definitionListItem>
+            <definitionListItem changeMark="1" changeType="add" reasonForUpdateRefIds="rfu-xml-catalog">
+              <listItemTerm>--xml-catalog &lt;file&gt;</listItemTerm>
+              <listItemDefinition>
+                <para>Use an XML catalog when resolving entities. Multiple catalogs may be loaded by specifying this option multiple times.</para>
+              </listItemDefinition>
+            </definitionListItem>
           </definitionList>
-        </para>
+        </para> 
         <levelledPara>
           <title>Business rule severity levels (<verbatimText verbatimStyle="vs02">.brseveritylevels</verbatimText>)</title>
           <para>The attribute <verbatimText verbatimStyle="vs13">brSeverityLevel</verbatimText> on a BREX rule allows for distinguishing different kinds of errors. The <verbatimText verbatimStyle="vs02">.brseveritylevels</verbatimText> file contains a list of severity levels, their user-defined type, and optionally if they should not be counted as true errors (causing the tool to return a "failure" status) but merely warnings.</para>
@@ -348,6 +363,49 @@
           </para>
           <para>The s1kd-brexcheck tool supports all three types. If the <verbatimText verbatimStyle="vs13">valueForm</verbatimText> attribute is omitted, it will assume the value is in the <verbatimText verbatimStyle="vs14">"single"</verbatimText> notation.</para>
         </levelledPara>
+        <levelledPara>
+          <title>XPath support</title>
+          <para changeMark="1" changeType="modify" reasonForUpdateRefIds="rfu-0001">
+            Supported XPath syntax depends on what XPath engine was selected at compile-time:
+            <definitionList>
+              <definitionListItem>
+                <listItemTerm>libxml2 (default)</listItemTerm>
+                <listItemDefinition>
+                  <para>
+                    <randomList>
+                      <listItem>
+                        <para>XPath 1.0</para>
+                      </listItem>
+                      <listItem>
+                        <para>Partial support for EXSLT functions</para>
+                      </listItem>
+                    </randomList>
+                  </para>
+                </listItemDefinition>
+              </definitionListItem>
+              <definitionListItem>
+                <listItemTerm>Saxon (experimental)</listItemTerm>
+                <listItemDefinition>
+                  <para>
+                    <randomList>
+                      <listItem>
+                        <para>XPath 1.0</para>
+                      </listItem>
+                      <listItem>
+                        <para>XPath 2.0</para>
+                      </listItem>
+                      <listItem>
+                        <para>XPath 3.0</para>
+                      </listItem>
+                    </randomList>
+                  </para>
+                </listItemDefinition>
+              </definitionListItem>
+            </definitionList>
+            Information on which XPath engine is in use can be obtained from the --version option.
+          </para>
+          <para>If the XPath given for the <verbatimText verbatimStyle="vs12">&lt;objectPath&gt;</verbatimText> of a rule is invalid, the rule will be ignored when validating objects. A warning will be printed to stderr, and the XML report will contain an <verbatimText verbatimStyle="vs12">&lt;xpathError&gt;</verbatimText> element for each error.</para>
+        </levelledPara>
       </levelledPara>
       <levelledPara>
         <title>EXIT STATUS</title>
@@ -375,12 +433,6 @@
               <listItemTerm>3</listItemTerm>
               <listItemDefinition>
                 <para>A referenced BREX data module could not be found.</para>
-              </listItemDefinition>
-            </definitionListItem>
-            <definitionListItem>
-              <listItemTerm>4</listItemTerm>
-              <listItemDefinition>
-                <para>An XPath expression given for a BREX rule was invalid.</para>
               </listItemDefinition>
             </definitionListItem>
             <definitionListItem>

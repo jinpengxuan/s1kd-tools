@@ -132,8 +132,8 @@ Show version information.
 The object(s) to preprocess. This can include both individual objects
 and combined files such as those produced by s1kd-flatten(1).
 
-In addition, the following options enable features of the XML parser
-that are disabled as a precaution by default:
+In addition, the following options allow configuration of the XML
+parser:
 
 --dtdload  
 Load the external DTD.
@@ -155,6 +155,10 @@ Emit warnings from parser.
 
 --xinclude  
 Do XInclude processing.
+
+--xml-catalog &lt;file&gt;  
+Use an XML catalog when resolving entities. Multiple catalogs may be
+loaded by specifying this option multiple times.
 
 `.disptext` file
 ----------------
@@ -280,7 +284,8 @@ Evaluate annotation:
 
 Human-readable format:
 
-    "[Brook trekker Model + Version: Mk9], [Mountain storm Model + Version: Mk1]"
+    "[Brook trekker Model + Version: Mk9],
+    [Mountain storm Model + Version: Mk1]"
 
 Evaluate annotation:
 
@@ -352,17 +357,7 @@ The resulting XML would instead contain:
 The methods for generating display text can be changed either via the
 `.disptext` file, or by supplying a custom XSLT script with the -x
 option. The -, option can be used to dump the built-in XSLT as a
-starting point for a custom script. An identity template is
-automatically added to the script, equivalent to the following:
-
-    <xsl:template match="@*|node()">
-    <xsl:copy>
-    <xsl:apply-templates select="@*|node()"/>
-    </xsl:copy>
-    </xsl:template>
-
-This means any elements or attributes not matched by a more specific
-template in the script are copied.
+starting point for a custom script.
 
 Display text format string (-F)
 -------------------------------

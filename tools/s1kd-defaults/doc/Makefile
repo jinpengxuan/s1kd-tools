@@ -4,7 +4,7 @@ README=../README.md
 
 PREFIX=/usr/local
 MAN_PREFIX=$(PREFIX)/share/man/man1
-INSTALL=install
+INSTALL=install -D
 
 all: $(OUTPUT) $(README)
 
@@ -20,7 +20,7 @@ clean:
 	rm -f $(OUTPUT) $(README)
 
 install:
-	$(INSTALL) $(OUTPUT) $(MAN_PREFIX)
+	$(INSTALL) $(OUTPUT) $(MAN_PREFIX)/$(OUTPUT)
 
 uninstall:
 	rm -f $(MAN_PREFIX)/$(OUTPUT)

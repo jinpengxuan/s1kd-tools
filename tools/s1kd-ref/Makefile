@@ -1,39 +1,44 @@
-SOURCE=s1kd-ref.c ../common/s1kd_tools.c
-OUTPUT=s1kd-ref
+.PHONY: docs clean maintainer-clean install uninstall
+
+COMMON=../common
+
+SOURCE=s1kd-ref.c $(COMMON)/s1kd_tools.c
+
+ifeq ($(OS),Windows_NT)
+  OUTPUT=s1kd-ref.exe
+else
+  OUTPUT=s1kd-ref
+endif
 
 WARNING_FLAGS=-Wall -Werror -pedantic-errors
-CFLAGS=$(WARNING_FLAGS) -I ../common `pkg-config --cflags libxml-2.0 libxslt`
+CFLAGS=$(WARNING_FLAGS) -I $(COMMON) `pkg-config --cflags libxml-2.0 libxslt`
 
 ifeq ($(DEBUG),1)
-	CFLAGS+=-g
+  CFLAGS+=-g
 else
-	CFLAGS+=-O3
+  CFLAGS+=-O3
 endif
 
 LDFLAGS=`pkg-config --libs libxml-2.0 libxslt`
 
-ifeq ($(OS),Windows_NT)
-	LDFLAGS+=-lregex2
+ifeq ($(OSTYPE),msys)
+  LDFLAGS+=-lregex2
 endif
 
 PREFIX=/usr/local
 INSTALL_PREFIX=$(PREFIX)/bin
-INSTALL=install -s
+INSTALL=install -Ds
 
 all: $(OUTPUT)
 
 $(OUTPUT): $(SOURCE) xslt.h elems.h
 	$(CC) $(CFLAGS) -o $(OUTPUT) $(SOURCE) $(LDFLAGS)
 
-xslt.h: ../common/to*.xsl ref.xsl
-	>xslt.h
-	for f in $+; do xxd -i "$$f" >> $@; done
+xslt.h: $(COMMON)/to*.xsl ref.xsl
+	> $@ && for f in $+; do xxd -i "$$f" >> $@; done
 
 elems.h: elems/*.txt
-	>elems.h
-	for f in $+; do xxd -i "$$f" >> $@; done
-
-.PHONY: docs clean maintainer-clean install uninstall
+	> $@ && for f in $+; do xxd -i "$$f" >> $@; done
 
 docs:
 	$(MAKE) -C doc
@@ -45,7 +50,7 @@ maintainer-clean: clean
 	$(MAKE) -C doc clean
 
 install: $(OUTPUT)
-	$(INSTALL) $(OUTPUT) $(INSTALL_PREFIX)
+	$(INSTALL) $(OUTPUT) $(INSTALL_PREFIX)/$(OUTPUT)
 	$(MAKE) -C doc install
 
 uninstall:

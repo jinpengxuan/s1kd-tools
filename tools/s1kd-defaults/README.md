@@ -81,8 +81,8 @@ Names of files to convert. If none are specified, the default names of
 `.defaults` (for the -d option), `.dmtypes` (for the -D option) or
 `.fmtypes` (for the -F option) in the current directory are used.
 
-In addition, the following options enable features of the XML parser
-that are disabled as a precaution by default:
+In addition, the following options allow configuration of the XML
+parser:
 
 --dtdload  
 Load the external DTD.
@@ -105,6 +105,10 @@ Emit warnings from parser.
 --xinclude  
 Do XInclude processing.
 
+--xml-catalog &lt;file&gt;  
+Use an XML catalog when resolving entities. Multiple catalogs may be
+loaded by specifying this option multiple times.
+
 `.brexmap` file
 ---------------
 
@@ -126,6 +130,10 @@ Example of `.brexmap` file:
     <default path="//@languageIsoCode" ident="languageIsoCode"/>
     <default path="//@countryIsoCode" ident="countryIsoCode"/>
     </brexMap>
+
+More exact matches can be made by using the attribute `id` on the
+`<dmtypes>` or `<default>` elements. This overrides the `path`
+attribute, and will only match a BREX rule with the specified ID.
 
 EXAMPLES
 ========
